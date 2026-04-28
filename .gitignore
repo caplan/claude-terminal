@@ -9,6 +9,9 @@ build/
 *.o
 *.d
 
+# Release export options (populated from scripts/ExportOptions.plist.template)
+/ExportOptions.plist
+
 # GhosttyKit is downloaded on-demand by scripts/ensure-ghosttykit.sh
 GhosttyKit.xcframework
 

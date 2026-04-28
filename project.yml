@@ -1,4 +1,8 @@
 name: claude-terminal
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.4"
 settings:
   base:
     MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -21,8 +25,12 @@ targets:
           - "-lc++"
         CODE_SIGN_ENTITLEMENTS: claude-terminal.entitlements
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
+        ENABLE_HARDENED_RUNTIME: YES
         PRODUCT_BUNDLE_IDENTIFIER: org.claire.claude-terminal
         PRODUCT_NAME: claude-terminal
+        MARKETING_VERSION: "0.29.0"
+        CURRENT_PROJECT_VERSION: "29"
         INFOPLIST_FILE: Resources/Info.plist
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
@@ -30,6 +38,7 @@ targets:
     dependencies:
       - framework: GhosttyKit.xcframework
         embed: false
+      - package: Sparkle
     preBuildScripts:
       - script: '"${PROJECT_DIR}/scripts/ensure-ghosttykit.sh"'
         name: Build GhosttyKit

@@ -571,6 +571,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Claude Terminal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        let updateItem = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(Updater.checkForUpdates(_:)), keyEquivalent: "")
+        updateItem.target = Updater.shared
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings...", action: #selector(openPreferences), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Uninstall Claude Terminal...", action: #selector(uninstallApp), keyEquivalent: "")

@@ -1,0 +1,9 @@
+<?xml version="1.0" standalone="yes"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Claude Terminal</title>
+    <link>https://github.com/caplan/claude-terminal</link>
+    <description>Updates for Claude Terminal</description>
+    <language>en</language>
+  </channel>
+</rss>

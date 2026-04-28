@@ -101,3 +101,40 @@ The sidebar updates in real time as Claude works.
 
 - macOS 14.0+
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
+
+## Releasing
+
+Releases ship as Developer ID-signed, notarized `.app` bundles attached to GitHub Releases. The app auto-updates via [Sparkle](https://sparkle-project.org/) against an `appcast.xml` hosted in this repo.
+
+### One-time setup
+
+1. **Apple Developer cert.** In Xcode → Settings → Accounts, sign in with your Apple ID and use "Manage Certificates…" → `+` → "Developer ID Application". Grab the 10-char Team ID from [developer.apple.com/account](https://developer.apple.com/account) → Membership.
+
+2. **Shell env.** Add to `~/.zshrc`:
+
+   ```bash
+   export DEVELOPMENT_TEAM=XXXXXXXXXX
+   ```
+
+3. **Notarytool keychain profile.** Create an app-specific password at [appleid.apple.com](https://appleid.apple.com), then store credentials once:
+
+   ```bash
+   xcrun notarytool store-credentials "claude-terminal-notarytool" \
+     --apple-id your-apple-id@example.com \
+     --team-id "$DEVELOPMENT_TEAM" \
+     --password <app-specific-password>
+   ```
+
+4. **Sparkle EdDSA keys.** After the first Release build resolves Sparkle via SPM, its tools land at `~/Library/Developer/Xcode/DerivedData/claude-terminal-*/SourcePackages/artifacts/sparkle/Sparkle/bin/`. Run `generate_keys` once — it stores the private key in the login keychain and prints the public key. Paste the public key into `Resources/Info.plist` under `SUPublicEDKey`.
+
+5. **GitHub CLI.** `brew install gh && gh auth login`.
+
+### Cut a release
+
+```bash
+scripts/release.sh 0.30.0
+```
+
+This bumps the version in `project.yml`, archives, exports with Developer ID, notarizes, staples, re-zips, signs the update with Sparkle, appends an `<item>` to `appcast.xml`, commits + tags, and creates the GitHub Release with the zipped `.app` attached.
+
+Users running older versions get an update prompt within 24h (or on next `Check for Updates…`).
