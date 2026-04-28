@@ -1,0 +1,35 @@
+name: claude-terminal
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "5.0"
+targets:
+  claude-terminal:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - Resources/Assets.xcassets
+      - path: Resources/ghostty
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_OBJC_BRIDGING_HEADER: claude-terminal-Bridging-Header.h
+        OTHER_LDFLAGS:
+          - "-lc++"
+        CODE_SIGN_ENTITLEMENTS: claude-terminal.entitlements
+        CODE_SIGN_STYLE: Automatic
+        PRODUCT_BUNDLE_IDENTIFIER: org.claire.claude-terminal
+        PRODUCT_NAME: claude-terminal
+        INFOPLIST_FILE: Resources/Info.plist
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+    dependencies:
+      - framework: GhosttyKit.xcframework
+        embed: false
+    preBuildScripts:
+      - script: '"${PROJECT_DIR}/scripts/ensure-ghosttykit.sh"'
+        name: Build GhosttyKit

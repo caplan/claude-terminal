@@ -1,0 +1,19 @@
+# Xcode
+claude-terminal.xcodeproj/
+xcuserdata/
+DerivedData/
+*.xcworkspace
+
+# Build artifacts
+build/
+*.o
+*.d
+
+# GhosttyKit is downloaded on-demand by scripts/ensure-ghosttykit.sh
+GhosttyKit.xcframework
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
