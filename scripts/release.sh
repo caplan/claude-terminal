@@ -81,13 +81,10 @@ xcodebuild \
   -scheme claude-terminal \
   -configuration Release \
   -archivePath "$ARCHIVE_PATH" \
+  -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-  archive | xcbeautify 2>/dev/null || xcodebuild \
-  -project claude-terminal.xcodeproj \
-  -scheme claude-terminal \
-  -configuration Release \
-  -archivePath "$ARCHIVE_PATH" \
-  DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+  CODE_SIGN_IDENTITY="Developer ID Application" \
+  CODE_SIGN_STYLE=Manual \
   archive
 
 # 5. Export signed .app with Developer ID
