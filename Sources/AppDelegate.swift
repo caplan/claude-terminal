@@ -2,12 +2,19 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
+struct OpenDocState: Codable, Equatable {
+    var path: String
+    var scrollY: Double
+}
+
 struct WindowConfig: Codable {
     var workingDirectory: String
     var claudeOptions: String?
     var sessionName: String?
     var sidebarVisible: Bool
     var sidebarWidth: Double?
+    var openDocs: [OpenDocState]?
+    var activeDocPath: String?
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -545,6 +552,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 config.sidebarVisible = sidebar.isVisible
                 config.sidebarWidth = Double(sidebar.width)
             }
+            if let tabState = documentTabStates[windowId] {
+                config.openDocs = tabState.tabs.map { tab in
+                    OpenDocState(
+                        path: tab.path,
+                        scrollY: tabState.liveScroll[tab.id] ?? 0
+                    )
+                }
+                config.activeDocPath = tabState.active.flatMap { id in
+                    tabState.tabs.first(where: { $0.id == id })?.path
+                }
+            }
             configs.append(config)
         }
         if let data = try? JSONEncoder().encode(configs) {
@@ -606,6 +624,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionMonitors[windowId] = monitor
         documentTabStates[windowId] = tabState
         windowConfigs[windowId] = config
+
+        // Reopen markdown tabs that were open when the app last quit, and
+        // prime the pending-scroll map so the first render of each doc
+        // restores its previous scrollY.
+        if let saved = config.openDocs, !saved.isEmpty {
+            for doc in saved where FileManager.default.fileExists(atPath: doc.path) {
+                tabState.pendingRestore[doc.path] = doc.scrollY
+                tabState.open(path: doc.path)
+            }
+            if let activePath = config.activeDocPath,
+               let match = tabState.tabs.first(where: { $0.path == activePath }) {
+                tabState.active = match.id
+            } else {
+                // No explicit active doc — default back to the terminal tab.
+                tabState.active = nil
+            }
+        }
+
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
     }
 
@@ -662,6 +698,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Find…", action: #selector(findInDoc), keyEquivalent: "f")
+        let findNextItem = editMenu.addItem(withTitle: "Find Next", action: #selector(findNextInDoc), keyEquivalent: "g")
+        findNextItem.keyEquivalentModifierMask = [.command]
+        let findPrevItem = editMenu.addItem(withTitle: "Find Previous", action: #selector(findPreviousInDoc), keyEquivalent: "g")
+        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
@@ -688,6 +730,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openPreferences() {
         PreferencesWindowController.shared.showWindow()
+    }
+
+    @objc private func findInDoc() {
+        guard let (_, window) = resolveFrontWindow() else { return }
+        // Yield first-responder from the Ghostty terminal so the find bar's
+        // TextField can actually receive focus when SwiftUI mounts it.
+        window.makeFirstResponder(window.contentView)
+        frontTabState()?.triggerFind()
+    }
+
+    @objc private func findNextInDoc() {
+        frontTabState()?.findNext(backwards: false)
+    }
+
+    @objc private func findPreviousInDoc() {
+        frontTabState()?.findNext(backwards: true)
+    }
+
+    private func frontTabState() -> DocumentTabState? {
+        guard let (windowId, _) = resolveFrontWindow() else { return nil }
+        return documentTabStates[windowId]
     }
 
     @objc private func showAboutPanel() {

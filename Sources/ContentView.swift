@@ -59,7 +59,7 @@ struct ContentView: View {
                 if !tabState.tabs.isEmpty {
                     TerminalTabBar(state: tabState)
                 }
-                ZStack {
+                ZStack(alignment: .topTrailing) {
                     Color(nsColor: .textBackgroundColor)
 
                     GhosttyTerminalView(
@@ -71,8 +71,19 @@ struct ContentView: View {
                     .opacity(activeDocTab == nil ? 1 : 0)
                     .allowsHitTesting(activeDocTab == nil)
 
-                    if let tab = activeDocTab {
-                        MarkdownViewerView(path: tab.path)
+                    // Keep every open doc's WKWebView mounted so scroll
+                    // position survives switching tabs.
+                    ForEach(tabState.tabs) { tab in
+                        MarkdownViewerView(tabId: tab.id, path: tab.path, tabState: tabState)
+                            .opacity(tabState.active == tab.id ? 1 : 0)
+                            .allowsHitTesting(tabState.active == tab.id)
+                    }
+
+                    if tabState.findActive, activeDocTab != nil {
+                        DocFindBar(tabState: tabState)
+                            .padding(.top, 8)
+                            .padding(.trailing, 12)
+                            .transition(.opacity)
                     }
                 }
             }

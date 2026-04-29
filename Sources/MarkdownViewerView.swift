@@ -2,44 +2,62 @@ import SwiftUI
 import WebKit
 
 struct MarkdownViewerView: NSViewRepresentable {
+    let tabId: UUID
     let path: String
+    @ObservedObject var tabState: DocumentTabState
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(tabId: tabId, tabState: tabState)
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        config.userContentController.add(context.coordinator, name: "scroll")
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
         context.coordinator.load(path: path)
+        if tabState.active == tabId {
+            tabState.activeWebView = webView
+        }
         return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.webView = nsView
         context.coordinator.load(path: path)
+        if tabState.active == tabId {
+            tabState.activeWebView = nsView
+        }
     }
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
         coordinator.stopWatching()
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
         private var currentPath: String?
         private var isHarnessLoaded = false
         private var pendingSource: String?
+        private var hasAppliedRestoreScroll = false
         private var fileDescriptor: Int32 = -1
         private var dispatchSource: DispatchSourceFileSystemObject?
         private let watchQueue = DispatchQueue(label: "org.claire.claude-terminal.md-viewer", qos: .utility)
+        private let tabId: UUID
+        private weak var tabState: DocumentTabState?
+
+        init(tabId: UUID, tabState: DocumentTabState) {
+            self.tabId = tabId
+            self.tabState = tabState
+        }
 
         func load(path: String) {
             guard path != currentPath else { return }
             currentPath = path
+            hasAppliedRestoreScroll = false
             stopWatching()
 
             if !isHarnessLoaded {
@@ -47,6 +65,15 @@ struct MarkdownViewerView: NSViewRepresentable {
             }
             renderFromDisk()
             startWatching(path: path)
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "scroll" else { return }
+            if let y = message.body as? Double {
+                tabState?.recordScroll(tabId: tabId, y: y)
+            } else if let y = message.body as? NSNumber {
+                tabState?.recordScroll(tabId: tabId, y: y.doubleValue)
+            }
         }
 
         private func loadHarness() {
@@ -91,7 +118,17 @@ struct MarkdownViewerView: NSViewRepresentable {
             guard let jsonArray = String(data: encoded, encoding: .utf8) else { return }
             // jsonArray is e.g. ["hello **world**"], pull the first element.
             let js = "window.render(\(jsonArray)[0]);"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            webView.evaluateJavaScript(js) { [weak self] _, _ in
+                guard let self else { return }
+                guard !self.hasAppliedRestoreScroll else { return }
+                guard let path = self.currentPath,
+                      let y = self.tabState?.takePendingRestore(forPath: path) else { return }
+                self.hasAppliedRestoreScroll = true
+                // Defer one runloop tick so mermaid/hljs have laid out before we scroll.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    self.webView?.evaluateJavaScript("window.setScroll(\(y));", completionHandler: nil)
+                }
+            }
         }
 
         private func startWatching(path: String) {

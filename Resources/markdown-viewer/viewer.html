@@ -39,6 +39,28 @@
         return defaultCode(code, lang, escaped);
       };
 
+      // GitHub-style heading slugger so in-document anchor links work.
+      // Marked's parsed `text` arg may contain HTML; strip it before slugging.
+      const slugCounts = {};
+      function resetSlugs() { for (const k in slugCounts) delete slugCounts[k]; }
+      function slugify(text) {
+        const plain = String(text).replace(/<[^>]+>/g, '');
+        let slug = plain.toLowerCase()
+          .trim()
+          .replace(/[^\p{L}\p{N} \-_]/gu, '')
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-+|-+$/g, '');
+        if (!slug) slug = 'section';
+        const count = slugCounts[slug] || 0;
+        slugCounts[slug] = count + 1;
+        return count === 0 ? slug : slug + '-' + count;
+      }
+      renderer.heading = function (text, level) {
+        const id = slugify(text);
+        return '<h' + level + ' id="' + id + '">' + text + '</h' + level + '>';
+      };
+
       marked.setOptions({ gfm: true, breaks: false, renderer: renderer });
 
       // DOMPurify config permissive enough to allow mermaid's SVG output
@@ -56,6 +78,7 @@
       window.render = async function (src) {
         if (!ready) { pending = src; return; }
         const prevScroll = window.scrollY;
+        resetSlugs();
         const html = marked.parse(src || '');
         const safe = DOMPurify.sanitize(html, purifyConfig);
         el.innerHTML = safe;
@@ -70,6 +93,32 @@
           }
         });
         window.scrollTo(0, prevScroll);
+      };
+
+      // Scroll reporting → Swift (throttled). Used to persist scroll
+      // position so it can be restored across quit/restart.
+      let __scrollThrottle = null;
+      let __lastSentScroll = -1;
+      window.addEventListener('scroll', function () {
+        if (__scrollThrottle) return;
+        __scrollThrottle = setTimeout(function () {
+          __scrollThrottle = null;
+          const y = Math.round(window.scrollY);
+          if (y === __lastSentScroll) return;
+          __lastSentScroll = y;
+          try {
+            window.webkit &&
+              window.webkit.messageHandlers &&
+              window.webkit.messageHandlers.scroll &&
+              window.webkit.messageHandlers.scroll.postMessage(y);
+          } catch (_) {}
+        }, 150);
+      });
+
+      // Called by Swift after restoring a session to put the scroll
+      // position back where it was before the app quit.
+      window.setScroll = function (y) {
+        window.scrollTo(0, y || 0);
       };
 
       // Signal readiness after libs are defined.
