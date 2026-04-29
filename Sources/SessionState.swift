@@ -65,8 +65,17 @@ struct NetworkInfo: Codable, Equatable {
     var avgApiMsPerTurn: Int?
     var apiTimePercent: Int?
 
+    // Cumulative time breakdown for the session — all counted in ms.
+    // apiMsTotal is "Claude thinking" (network + server inference), accumulated
+    // across UserPromptSubmit→PreToolUse and PostToolUse→(PreToolUse|Stop).
+    // toolMsTotal is wall-clock time spent running local tools
+    // (PreToolUse→PostToolUse).
+    var apiMsTotal: Int?
+    var toolMsTotal: Int?
+
     var hasData: Bool {
         lastToolMs != nil || avgApiMsPerTurn != nil || apiTimePercent != nil
+            || apiMsTotal != nil || toolMsTotal != nil
     }
 }
 

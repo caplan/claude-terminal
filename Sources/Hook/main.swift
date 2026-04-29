@@ -138,6 +138,15 @@ func recordApiRTT(_ state: inout [String: Any], duration: Int, label: String) {
     entries.append(["ms": duration, "tool": label])
     if entries.count > 10 { entries = Array(entries.suffix(10)) }
     net["recentTools"] = entries
+    let apiTotal = ((net["apiMsTotal"] as? NSNumber)?.intValue ?? 0) + duration
+    net["apiMsTotal"] = apiTotal
+    state["network"] = net
+}
+
+func recordToolDuration(_ state: inout [String: Any], duration: Int) {
+    var net = (state["network"] as? [String: Any]) ?? [:]
+    let toolTotal = ((net["toolMsTotal"] as? NSNumber)?.intValue ?? 0) + duration
+    net["toolMsTotal"] = toolTotal
     state["network"] = net
 }
 
@@ -244,6 +253,14 @@ func runHook() {
                 recordApiRTT(&state, duration: duration, label: toolName)
             }
 
+            // Stash the PreToolUse timestamp so PostToolUse can compute how
+            // long the local tool actually took.
+            if !toolId.isEmpty {
+                var startMap = (state["_toolStartMs"] as? [String: Int]) ?? [:]
+                startMap[toolId] = nowMs()
+                state["_toolStartMs"] = startMap
+            }
+
             if toolName == "AskUserQuestion" {
                 state["needsInput"] = true
             }
@@ -301,6 +318,18 @@ func runHook() {
             active.removeAll(where: { ($0["id"] as? String) == toolId })
             state["activeTools"] = active
             if active.isEmpty { state["status"] = "thinking" }
+
+            // Compute how long this tool took locally and add to the
+            // cumulative tool-time total for the session.
+            if !toolId.isEmpty,
+               var startMap = state["_toolStartMs"] as? [String: Int],
+               let startMs = startMap[toolId] {
+                let duration = nowMs() - startMs
+                if duration >= 0 { recordToolDuration(&state, duration: duration) }
+                startMap.removeValue(forKey: toolId)
+                state["_toolStartMs"] = startMap
+            }
+
             state["_apiSendMs"] = nowMs()
         }
 

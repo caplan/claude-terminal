@@ -328,21 +328,25 @@ struct SidebarView: View {
     private func collapsedNetworkSection(_ net: NetworkInfo) -> some View {
         let waitingSec = apiWaitSeconds
         let isActive = state.status == .thinking || state.status == .toolUse || state.status == .streaming
-        return HStack {
-            sectionHeader("API Latency")
+        let apiMs = net.apiMsTotal ?? 0
+        let toolMs = net.toolMsTotal ?? 0
+        return HStack(spacing: 8) {
+            sectionHeader("Time")
             Spacer()
             if isActive, waitingSec >= 5 {
                 Text("waiting \(waitingSec)s...")
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
                     .foregroundColor(waitingSec > 15 ? .orange : Color(nsColor: .secondaryLabelColor))
+            } else if apiMs + toolMs > 0 {
+                timeStackedBar(apiMs: apiMs, toolMs: toolMs)
+                    .frame(width: 70, height: 6)
+                Text(formatDurationShort(apiMs + toolMs))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
             } else if let last = net.lastToolMs {
                 Text(formatLatency(last))
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
                     .foregroundColor(latencyColor(last))
-            } else if let avg = net.avgApiMsPerTurn {
-                Text(formatLatency(avg) + "/turn")
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
             }
         }
     }
@@ -372,9 +376,14 @@ struct SidebarView: View {
         let waitingSec = apiWaitSeconds
         let isSlow = waitingSec > 15
         let dotColor: Color = isSlow ? .orange : (isActive ? .blue : Color(nsColor: .separatorColor))
+        let apiMs = net.apiMsTotal ?? 0
+        let toolMs = net.toolMsTotal ?? 0
+        let total = apiMs + toolMs
+        let apiPct = total > 0 ? Int(round(Double(apiMs) / Double(total) * 100)) : 0
+        let toolPct = total > 0 ? 100 - apiPct : 0
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                sectionHeader("API Latency")
+                sectionHeader("Where time went")
                 Spacer()
                 if isActive {
                     PulsingDot(color: dotColor)
@@ -389,39 +398,67 @@ struct SidebarView: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(isSlow ? .orange : Color(nsColor: .secondaryLabelColor))
             }
-            HStack(spacing: 12) {
+            if total > 0 {
+                timeStackedBar(apiMs: apiMs, toolMs: toolMs)
+                    .frame(height: 6)
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.blue).frame(width: 6, height: 6)
+                            Text("Claude")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                        }
+                        Text(formatDurationShort(apiMs) + "  \(apiPct)%")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.green).frame(width: 6, height: 6)
+                            Text("Tools")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                        }
+                        Text(formatDurationShort(toolMs) + "  \(toolPct)%")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    }
+                }
                 if let last = net.lastToolMs {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Last")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        Text(formatLatency(last))
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundColor(latencyColor(last))
-                    }
+                    Text("last response \(formatLatency(last))")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(nsColor: .quaternaryLabelColor))
                 }
-                if let avg = net.avgApiMsPerTurn {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Avg/turn")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        Text(formatLatency(avg))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    }
-                }
-                if let pct = net.apiTimePercent {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("API")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        Text("\(pct)%")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    }
-                }
+            } else if let last = net.lastToolMs {
+                Text(formatLatency(last))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(latencyColor(last))
             }
         }
+    }
+
+    private func timeStackedBar(apiMs: Int, toolMs: Int) -> some View {
+        let total = max(1, apiMs + toolMs)
+        let apiFrac = Double(apiMs) / Double(total)
+        return GeometryReader { geo in
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(Color.blue)
+                    .frame(width: geo.size.width * apiFrac)
+                Rectangle()
+                    .fill(Color.green)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 2))
+        }
+    }
+
+    private func formatDurationShort(_ ms: Int) -> String {
+        let secs = ms / 1000
+        if secs < 60 { return "\(secs)s" }
+        let m = secs / 60
+        let s = secs % 60
+        return "\(m)m \(s)s"
     }
 
     private var apiWaitSeconds: Int {
