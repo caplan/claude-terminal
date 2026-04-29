@@ -35,11 +35,13 @@ BUILD_DIR="$PROJECT_DIR/build"
 ARCHIVE_PATH="$BUILD_DIR/claude-terminal.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 APP_PATH="$EXPORT_DIR/claude-terminal.app"
-ZIP_NAME="claude-terminal-$NEW_VERSION.zip"
-ZIP_PATH="$BUILD_DIR/$ZIP_NAME"
+NOTARIZE_ZIP_PATH="$BUILD_DIR/claude-terminal-$NEW_VERSION-notarize.zip"
+DMG_NAME="claude-terminal-$NEW_VERSION.dmg"
+DMG_PATH="$BUILD_DIR/$DMG_NAME"
+DMG_STAGING="$BUILD_DIR/dmg-staging"
 APPCAST_PATH="$PROJECT_DIR/appcast.xml"
 NOTARY_PROFILE="claude-terminal-notarytool"
-RELEASE_URL="https://github.com/caplan/claude-terminal/releases/download/v$NEW_VERSION/$ZIP_NAME"
+RELEASE_URL="https://github.com/caplan/claude-terminal/releases/download/v$NEW_VERSION/$DMG_NAME"
 
 cd "$PROJECT_DIR"
 
@@ -102,28 +104,50 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-# 6. Zip for notarization
-echo "==> Zipping for notarization"
-/usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+# 6. Zip the .app for notarization (notarytool needs a container; DMG will be made after)
+echo "==> Zipping .app for notarization"
+/usr/bin/ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP_PATH"
 
-# 7. Notarize + staple
-echo "==> Submitting to notarytool (waits for ticket)"
-xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
-echo "==> Stapling"
+# 7. Notarize + staple the .app
+echo "==> Submitting .app to notarytool (waits for ticket)"
+xcrun notarytool submit "$NOTARIZE_ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+echo "==> Stapling .app"
 xcrun stapler staple "$APP_PATH"
+rm -f "$NOTARIZE_ZIP_PATH"
 
-# 8. Re-zip the stapled app for distribution
-rm -f "$ZIP_PATH"
-/usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+# 8. Build a DMG containing the stapled .app + /Applications symlink
+echo "==> Building DMG"
+rm -rf "$DMG_STAGING"
+mkdir -p "$DMG_STAGING"
+/usr/bin/ditto "$APP_PATH" "$DMG_STAGING/$(basename "$APP_PATH")"
+ln -s /Applications "$DMG_STAGING/Applications"
+rm -f "$DMG_PATH"
+hdiutil create \
+  -volname "claude-terminal $NEW_VERSION" \
+  -srcfolder "$DMG_STAGING" \
+  -ov \
+  -format UDZO \
+  -fs HFS+ \
+  "$DMG_PATH"
 
-# 9. Sign update for Sparkle — requires Sparkle's sign_update to be on PATH
+# 9. Sign the DMG with Developer ID so Gatekeeper trusts the container itself
+echo "==> Signing DMG"
+codesign --force --sign "Developer ID Application" --timestamp "$DMG_PATH"
+
+# 10. Notarize + staple the DMG
+echo "==> Submitting DMG to notarytool (waits for ticket)"
+xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+echo "==> Stapling DMG"
+xcrun stapler staple "$DMG_PATH"
+
+# 11. Sign update for Sparkle — requires Sparkle's sign_update to be on PATH
 SIGN_UPDATE="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update' 2>/dev/null | head -n1)"
 if [[ -z "$SIGN_UPDATE" ]]; then
   echo "error: sign_update not found; build Release once so SPM resolves Sparkle first" >&2
   exit 1
 fi
 echo "==> Signing update for Sparkle"
-SIGN_OUTPUT="$("$SIGN_UPDATE" "$ZIP_PATH")"
+SIGN_OUTPUT="$("$SIGN_UPDATE" "$DMG_PATH")"
 # sign_update prints: sparkle:edSignature="..." length="N"
 ED_SIG="$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
 LENGTH="$(echo "$SIGN_OUTPUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')"
@@ -132,7 +156,7 @@ if [[ -z "$ED_SIG" || -z "$LENGTH" ]]; then
   exit 1
 fi
 
-# 10. Append <item> to appcast.xml (insert before </channel>)
+# 12. Append <item> to appcast.xml (insert before </channel>)
 PUB_DATE="$(LC_TIME=en_US.UTF-8 date -u '+%a, %d %b %Y %H:%M:%S +0000')"
 NEW_ITEM=$(cat <<EOF
     <item>
@@ -146,7 +170,7 @@ NEW_ITEM=$(cat <<EOF
         url="$RELEASE_URL"
         sparkle:edSignature="$ED_SIG"
         length="$LENGTH"
-        type="application/octet-stream" />
+        type="application/x-apple-diskimage" />
     </item>
 EOF
 )
@@ -163,7 +187,7 @@ awk -v itemfile="$TMP_ITEM" '
 mv "$APPCAST_PATH.new" "$APPCAST_PATH"
 rm -f "$TMP_ITEM"
 
-# 11. Commit + tag + release
+# 13. Commit + tag + release
 echo "==> Committing + tagging"
 git add project.yml appcast.xml
 git commit -m "Release v$NEW_VERSION"
@@ -173,7 +197,7 @@ git push origin "v$NEW_VERSION"
 
 echo "==> Creating GitHub release"
 gh release create "v$NEW_VERSION" \
-  "$ZIP_PATH" \
+  "$DMG_PATH" \
   --title "v$NEW_VERSION" \
   --generate-notes
 
