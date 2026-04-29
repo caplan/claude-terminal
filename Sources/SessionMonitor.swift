@@ -196,13 +196,30 @@ final class SessionMonitor: ObservableObject {
     // MARK: - Private
 
     private func writeState() {
-        watchQueue.async { [weak self] in
-            guard let self else { return }
-            guard let data = try? JSONEncoder().encode(self.state) else { return }
-            let dir = (self.statusFilePath as NSString).deletingLastPathComponent
+        // Capture state on the caller's thread (main) to avoid racing with
+        // readAndDecode's self.state = decoded on main. The async encode below
+        // must see the caller's intended value, not a post-readAndDecode one.
+        let snapshot = state
+        let filePath = statusFilePath
+        watchQueue.async {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            let dir = (filePath as NSString).deletingLastPathComponent
             let tmp = dir + "/.status.json.tmp"
+            let lockPath = dir + "/.status.lock"
+            // Exclusive lock on the status file so we can't interleave with the
+            // Python hook and statusline scripts (both flock the same path).
+            let lockFd = open(lockPath, O_CREAT | O_WRONLY, 0o644)
+            if lockFd >= 0 {
+                flock(lockFd, LOCK_EX)
+            }
             try? data.write(to: URL(fileURLWithPath: tmp))
-            try? FileManager.default.moveItem(atPath: tmp, toPath: self.statusFilePath)
+            // POSIX rename atomically replaces an existing destination;
+            // FileManager.moveItem does not and try? silently swallows the error.
+            _ = rename(tmp, filePath)
+            if lockFd >= 0 {
+                flock(lockFd, LOCK_UN)
+                close(lockFd)
+            }
         }
     }
 

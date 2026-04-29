@@ -332,8 +332,8 @@ struct SidebarView: View {
 
     private var resetCostButton: some View {
         Button(action: { monitor.resetCost() }) {
-            Image(systemName: "arrow.counterclockwise.circle.fill")
-                .font(.system(size: 14))
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(Color(nsColor: .secondaryLabelColor))
         }
         .buttonStyle(.plain)
@@ -711,14 +711,16 @@ struct SidebarView: View {
     }
 
     private func formatCost(_ usd: Double) -> String {
-        if usd < 0.01 {
-            return String(format: "$%.4f", usd)
+        // Clamp tiny negatives (floating-point noise after a reset) to zero.
+        let v = max(0, usd)
+        if v < 0.01 {
+            return String(format: "$%.4f", v)
         }
-        return String(format: "$%.2f", usd)
+        return String(format: "$%.2f", v)
     }
 
     private func formatDuration(_ ms: Int) -> String {
-        let seconds = ms / 1000
+        let seconds = max(0, ms) / 1000
         if seconds < 60 { return "\(seconds)s" }
         let minutes = seconds / 60
         let secs = seconds % 60
