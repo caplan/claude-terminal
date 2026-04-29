@@ -569,7 +569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Claude Terminal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About Claude Terminal", action: #selector(showAboutPanel), keyEquivalent: "")
         appMenu.addItem(.separator())
         let updateItem = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(Updater.checkForUpdates(_:)), keyEquivalent: "")
         updateItem.target = Updater.shared
@@ -621,6 +621,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openPreferences() {
         PreferencesWindowController.shared.showWindow()
+    }
+
+    @objc private func showAboutPanel() {
+        let repoURL = "https://github.com/caplan/claude-terminal"
+        let credits = NSMutableAttributedString(
+            string: repoURL,
+            attributes: [
+                .link: URL(string: repoURL) as Any,
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.linkColor,
+            ]
+        )
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: credits,
+        ])
     }
 
     @objc private func uninstallApp() {

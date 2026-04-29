@@ -261,17 +261,13 @@ struct SidebarView: View {
             }
             Text(formatTokens(ctx.contextWindowSize) + " window")
                 .font(.system(size: 11))
-                .foregroundColor(Color(nsColor: .quaternaryLabelColor))
+                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
         }
     }
 
     private func costSection(_ cost: CostInfo) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionHeader("Cost")
-                Spacer()
-                resetCostButton
-            }
+            sectionHeader("Cost")
             Text(formatCost(cost.totalCostUsd))
                 .font(.system(size: 20, weight: .medium, design: .monospaced))
                 .foregroundColor(.primary)
@@ -326,18 +322,7 @@ struct SidebarView: View {
             Text(formatCost(cost.totalCostUsd))
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
                 .foregroundColor(.primary)
-            resetCostButton
         }
-    }
-
-    private var resetCostButton: some View {
-        Button(action: { monitor.resetCost() }) {
-            Image(systemName: "arrow.counterclockwise")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(Color(nsColor: .secondaryLabelColor))
-        }
-        .buttonStyle(.plain)
-        .help("Reset cost for this session")
     }
 
     private func collapsedContextSection(_ ctx: ContextUsage) -> some View {
