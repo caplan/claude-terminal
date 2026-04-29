@@ -2,10 +2,11 @@ import SwiftUI
 
 struct SidebarHostView: NSViewRepresentable {
     @ObservedObject var monitor: SessionMonitor
+    @ObservedObject var tabState: DocumentTabState
     var width: CGFloat
 
     func makeNSView(context: Context) -> NSView {
-        let hosting = NSHostingView(rootView: SidebarView(monitor: monitor, width: width))
+        let hosting = NSHostingView(rootView: SidebarView(monitor: monitor, tabState: tabState, width: width))
         hosting.translatesAutoresizingMaskIntoConstraints = false
 
         let container = NSView()
@@ -24,7 +25,7 @@ struct SidebarHostView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let hosting = nsView.subviews.first as? NSHostingView<SidebarView> else { return }
-        hosting.rootView = SidebarView(monitor: monitor, width: width)
+        hosting.rootView = SidebarView(monitor: monitor, tabState: tabState, width: width)
         if let wc = nsView.constraints.first(where: { $0.identifier == "sidebarWidth" }) ??
            hosting.constraints.first(where: { $0.identifier == "sidebarWidth" }) {
             wc.constant = width

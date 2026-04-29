@@ -32,6 +32,10 @@ final class SessionMonitor: ObservableObject {
             } else if let initialName {
                 initial.sessionName = initialName
             }
+            let persisted = Self.loadPersistedDocuments(for: workingDirectory)
+            if !persisted.isEmpty {
+                initial.documents = persisted
+            }
         } else if let initialName {
             initial.sessionName = initialName
         }
@@ -310,12 +314,87 @@ final class SessionMonitor: ObservableObject {
                     decoded.sessionName = name
                 }
 
+                // Union hook-reported docs with the persisted list so docs
+                // Claude writes are sticky across relaunches.
+                if let dir = self.workingDirectory {
+                    let persisted = Self.loadPersistedDocuments(for: dir)
+                    let hookDocs = decoded.documents ?? []
+                    let merged = Self.mergeDocuments(persisted, hookDocs)
+                    if merged != (decoded.documents ?? []) {
+                        decoded.documents = merged
+                    }
+                    let newEntries = hookDocs.filter { !persisted.contains($0) }
+                    if !newEntries.isEmpty {
+                        Self.persistDocuments(merged, for: dir)
+                    }
+                }
+
                 self.state = decoded
                 if decoded.needsInput == true && !wasNeeding {
                     self.sendNeedsInputNotification()
                 }
             }
         }
+    }
+
+    func addDocument(path: String) {
+        let ext = (path as NSString).pathExtension.lowercased()
+        guard ext == "md" || ext == "markdown" || ext == "mdown" else { return }
+        var docs = state.documents ?? []
+        guard !docs.contains(path) else { return }
+        docs.append(path)
+        state.documents = docs
+        if !isMock {
+            writeState()
+            if let dir = workingDirectory {
+                Self.persistDocuments(docs, for: dir)
+            }
+        }
+    }
+
+    // MARK: - Document persistence
+
+    private static var persistFilePath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/.claude-terminal/docs-by-dir.json"
+    }
+
+    private static let persistQueue = DispatchQueue(label: "org.claire.claude-terminal.docs-persist", qos: .utility)
+
+    static func loadPersistedDocuments(for workingDirectory: String) -> [String] {
+        guard let data = FileManager.default.contents(atPath: persistFilePath),
+              let map = try? JSONSerialization.jsonObject(with: data) as? [String: [String]],
+              let list = map[workingDirectory] else {
+            return []
+        }
+        return list.filter { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    static func persistDocuments(_ docs: [String], for workingDirectory: String) {
+        persistQueue.async {
+            var map: [String: [String]] = [:]
+            if let data = FileManager.default.contents(atPath: persistFilePath),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: [String]] {
+                map = parsed
+            }
+            map[workingDirectory] = docs
+            let dir = (persistFilePath as NSString).deletingLastPathComponent
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            guard let data = try? JSONSerialization.data(withJSONObject: map, options: [.sortedKeys]) else { return }
+            try? data.write(to: URL(fileURLWithPath: persistFilePath), options: .atomic)
+        }
+    }
+
+    static func mergeDocuments(_ persisted: [String], _ hookDocs: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for p in persisted + hookDocs where !seen.contains(p) {
+            if FileManager.default.fileExists(atPath: p) {
+                seen.insert(p)
+                result.append(p)
+            }
+        }
+        return result
     }
 
     private func sendNeedsInputNotification() {

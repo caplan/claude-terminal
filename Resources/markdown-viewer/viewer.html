@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="github-markdown.css">
+  <link rel="stylesheet" href="highlight.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="highlight-dark.css" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="viewer.css">
+  <script src="marked.min.js"></script>
+  <script src="purify.min.js"></script>
+  <script src="highlight.min.js"></script>
+  <script src="mermaid.min.js"></script>
+</head>
+<body>
+  <article class="markdown-body" id="content"
+           data-color-mode="auto"
+           data-light-theme="light"
+           data-dark-theme="dark"></article>
+  <script>
+    (function () {
+      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: isDark ? 'dark' : 'default'
+      });
+
+      const renderer = new marked.Renderer();
+      const defaultCode = renderer.code.bind(renderer);
+      renderer.code = function (code, lang, escaped) {
+        if ((lang || '').trim().toLowerCase() === 'mermaid') {
+          const esc = String(code)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+          return '<pre class="mermaid">' + esc + '</pre>';
+        }
+        return defaultCode(code, lang, escaped);
+      };
+
+      marked.setOptions({ gfm: true, breaks: false, renderer: renderer });
+
+      // DOMPurify config permissive enough to allow mermaid's SVG output
+      // after render. We sanitize the initial marked HTML (before mermaid
+      // runs) to strip any script/iframe/etc. from user markdown; the
+      // SVG that mermaid injects after is trusted.
+      const purifyConfig = {
+        USE_PROFILES: { html: true }
+      };
+
+      let ready = false;
+      let pending = null;
+      const el = document.getElementById('content');
+
+      window.render = async function (src) {
+        if (!ready) { pending = src; return; }
+        const prevScroll = window.scrollY;
+        const html = marked.parse(src || '');
+        const safe = DOMPurify.sanitize(html, purifyConfig);
+        el.innerHTML = safe;
+        try {
+          await mermaid.run({ querySelector: '.mermaid' });
+        } catch (e) {
+          console.warn('mermaid render error', e);
+        }
+        el.querySelectorAll('pre code').forEach(function (block) {
+          if (!block.classList.contains('hljs')) {
+            try { hljs.highlightElement(block); } catch (_) {}
+          }
+        });
+        window.scrollTo(0, prevScroll);
+      };
+
+      // Signal readiness after libs are defined.
+      ready = true;
+      if (pending != null) {
+        const src = pending; pending = null;
+        window.render(src);
+      }
+    })();
+  </script>
+</body>
+</html>

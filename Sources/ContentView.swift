@@ -4,13 +4,15 @@ struct ContentView: View {
     @StateObject private var terminalSurface: TerminalSurface
     @ObservedObject var monitor: SessionMonitor
     @ObservedObject var sidebarState: SidebarState
+    @ObservedObject var tabState: DocumentTabState
 
     let sessionId: UUID
 
-    init(tabId: UUID, sessionId: UUID, sidebarState: SidebarState, monitor: SessionMonitor, workingDirectory: String? = nil, claudeOptions: String? = nil) {
+    init(tabId: UUID, sessionId: UUID, sidebarState: SidebarState, monitor: SessionMonitor, tabState: DocumentTabState, workingDirectory: String? = nil, claudeOptions: String? = nil) {
         self.sessionId = sessionId
         self.sidebarState = sidebarState
         self.monitor = monitor
+        self.tabState = tabState
 
         var config = CtSurfaceConfigTemplate()
         let claudeBin = AppDelegate.shared?.claudePath ?? "claude"
@@ -46,23 +48,39 @@ struct ContentView: View {
         _terminalSurface = StateObject(wrappedValue: surface)
     }
 
+    private var activeDocTab: DocumentTab? {
+        guard let id = tabState.active else { return nil }
+        return tabState.tabs.first(where: { $0.id == id })
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            ZStack {
-                Color(nsColor: .textBackgroundColor)
+            VStack(spacing: 0) {
+                if !tabState.tabs.isEmpty {
+                    TerminalTabBar(state: tabState)
+                }
+                ZStack {
+                    Color(nsColor: .textBackgroundColor)
 
-                GhosttyTerminalView(
-                    terminalSurface: terminalSurface,
-                    paneId: UUID(),
-                    isActive: true,
-                    isVisibleInUI: true
-                )
+                    GhosttyTerminalView(
+                        terminalSurface: terminalSurface,
+                        paneId: UUID(),
+                        isActive: activeDocTab == nil,
+                        isVisibleInUI: activeDocTab == nil
+                    )
+                    .opacity(activeDocTab == nil ? 1 : 0)
+                    .allowsHitTesting(activeDocTab == nil)
+
+                    if let tab = activeDocTab {
+                        MarkdownViewerView(path: tab.path)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if sidebarState.isVisible {
                 SidebarDragHandle(sidebarState: sidebarState)
-                SidebarHostView(monitor: monitor, width: sidebarState.width)
+                SidebarHostView(monitor: monitor, tabState: tabState, width: sidebarState.width)
             }
         }
         .onAppear {

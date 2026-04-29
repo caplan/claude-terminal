@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var monitor: SessionMonitor
+    @ObservedObject var tabState: DocumentTabState
     var width: CGFloat = 280
 
     private var state: SessionState { monitor.state }
@@ -503,55 +504,98 @@ struct SidebarView: View {
     }
 
     private func documentsSection(_ docs: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             sectionHeader("Documents")
             ForEach(docs, id: \.self) { path in
-                HStack(spacing: 6) {
-                    Image(systemName: documentIcon(path))
-                        .font(.system(size: 11))
-                        .foregroundColor(.blue)
-                    Text(abbreviateFilePath(path))
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.blue)
-                        .underline()
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .help(path)
-                .onTapGesture {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
-                }
-                .contextMenu {
-                    Button("Open") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                documentCard(path: path)
+            }
+        }
+    }
+
+    private func documentCard(path: String) -> some View {
+        let meta = DocumentExcerptCache.excerpt(for: path)
+        let isMarkdown = path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown")
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: documentIcon(path))
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                Text((path as NSString).lastPathComponent)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if !meta.title.isEmpty || !meta.excerpt.isEmpty {
+                VStack(alignment: .leading, spacing: 1) {
+                    if !meta.title.isEmpty {
+                        Text(meta.title)
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                            .lineLimit(1)
                     }
-                    Button("Open With...") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            let panel = NSOpenPanel()
-                            panel.message = "Choose an application"
-                            panel.allowedContentTypes = [.application]
-                            panel.directoryURL = URL(fileURLWithPath: "/Applications")
-                            panel.canChooseFiles = true
-                            panel.canChooseDirectories = false
-                            if panel.runModal() == .OK, let appURL = panel.url {
-                                NSWorkspace.shared.open(
-                                    [URL(fileURLWithPath: path)],
-                                    withApplicationAt: appURL,
-                                    configuration: NSWorkspace.OpenConfiguration()
-                                )
-                            }
-                        }
-                    }
-                    Button("Show in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                    }
-                    Divider()
-                    Button("Copy Path") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(path, forType: .string)
+                    if !meta.excerpt.isEmpty {
+                        Text(meta.excerpt)
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                            .lineLimit(2)
                     }
                 }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.15))
+        )
+        .contentShape(Rectangle())
+        .help(path)
+        .onTapGesture {
+            if isMarkdown {
+                tabState.open(path: path)
+                monitor.addDocument(path: path)
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            }
+        }
+        .contextMenu {
+            if isMarkdown {
+                Button("Open in Tab") {
+                    tabState.open(path: path)
+                    monitor.addDocument(path: path)
+                }
+                Divider()
+            }
+            Button("Open in Default App") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            }
+            Button("Open With...") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    let panel = NSOpenPanel()
+                    panel.message = "Choose an application"
+                    panel.allowedContentTypes = [.application]
+                    panel.directoryURL = URL(fileURLWithPath: "/Applications")
+                    panel.canChooseFiles = true
+                    panel.canChooseDirectories = false
+                    if panel.runModal() == .OK, let appURL = panel.url {
+                        NSWorkspace.shared.open(
+                            [URL(fileURLWithPath: path)],
+                            withApplicationAt: appURL,
+                            configuration: NSWorkspace.OpenConfiguration()
+                        )
+                    }
+                }
+            }
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            }
+            Divider()
+            Button("Copy Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(path, forType: .string)
             }
         }
     }

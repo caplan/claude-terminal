@@ -161,7 +161,9 @@ func runHook() {
         state["toolDetail"] = NSNull()
         state["subagents"] = []
         state["tasks"] = []
-        state["documents"] = []
+        // Do NOT clear documents on SessionStart. Swift seeds this list from
+        // the per-workingdir persist file before the hook runs, so docs
+        // Claude wrote in prior sessions stay in the sidebar.
         if let ccId = event["session_id"] as? String, !ccId.isEmpty {
             state["claudeCodeSessionId"] = ccId
             // Seed displayed cost from last persisted value so the sidebar

@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tabManagers: [UUID: TabManager] = [:]
     private var sidebarStates: [UUID: SidebarState] = [:]
     private var sessionMonitors: [UUID: SessionMonitor] = [:]
+    private var documentTabStates: [UUID: DocumentTabState] = [:]
     private var windowConfigs: [UUID: WindowConfig] = [:]
     private var windowMenu: NSMenu?
     private var launchedViaURL = false
@@ -73,6 +74,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    // Routes Finder double-click / `open -a claude-terminal foo.md` / drag-to-dock
+    // into a markdown tab in the frontmost window. If no session window exists,
+    // spins up a new session rooted at the file's parent directory.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.isFileURL {
+            handleOpenFile(url: url)
+        }
+    }
+
+    private func handleOpenFile(url: URL) {
+        let path = url.path
+        let ext = (path as NSString).pathExtension.lowercased()
+        let isMarkdown = ext == "md" || ext == "markdown" || ext == "mdown"
+
+        guard isMarkdown else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+
+        if let (windowId, window) = resolveFrontWindow(),
+           let tabState = documentTabStates[windowId] {
+            tabState.open(path: path)
+            sessionMonitors[windowId]?.addDocument(path: path)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let parent = (path as NSString).deletingLastPathComponent
+        openWindowDirectly(workingDirectory: parent, claudeOptions: nil, sessionName: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            guard let (windowId, _) = self.resolveFrontWindow(),
+                  let tabState = self.documentTabStates[windowId] else { return }
+            tabState.open(path: path)
+            self.sessionMonitors[windowId]?.addDocument(path: path)
+        }
+    }
+
+    private func resolveFrontWindow() -> (UUID, NSWindow)? {
+        if let key = NSApp.keyWindow,
+           let (id, w) = windows.first(where: { $0.value === key }) {
+            return (id, w)
+        }
+        if let main = NSApp.mainWindow,
+           let (id, w) = windows.first(where: { $0.value === main }) {
+            return (id, w)
+        }
+        if let (id, w) = windows.first {
+            return (id, w)
+        }
+        return nil
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -137,11 +191,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sidebarState = SidebarState(defaultVisible: sidebarVisible)
         let resolvedName = sessionName ?? (dir as NSString).lastPathComponent
         let monitor = SessionMonitor(sessionId: sessionId, initialName: resolvedName, workingDirectory: dir)
+        let tabState = DocumentTabState()
         let contentView = ContentView(
             tabId: tabId,
             sessionId: sessionId,
             sidebarState: sidebarState,
             monitor: monitor,
+            tabState: tabState,
             workingDirectory: dir,
             claudeOptions: opts
         )
@@ -172,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tabManagers[tabId] = TabManager(window: window, tabId: tabId)
         sidebarStates[windowId] = sidebarState
         sessionMonitors[windowId] = monitor
+        documentTabStates[windowId] = tabState
         windowConfigs[windowId] = WindowConfig(
             workingDirectory: dir,
             claudeOptions: opts,
@@ -262,12 +319,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
         let sidebarState = SidebarState(defaultVisible: sidebarVisible)
         let monitor = SessionMonitor(sessionId: sessionId, initialName: resolvedName, workingDirectory: dir)
+        let tabState = DocumentTabState()
 
         let contentView = ContentView(
             tabId: tabId,
             sessionId: sessionId,
             sidebarState: sidebarState,
             monitor: monitor,
+            tabState: tabState,
             workingDirectory: dir,
             claudeOptions: opts
         )
@@ -299,6 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tabManagers[tabId] = TabManager(window: window, tabId: tabId)
         sidebarStates[windowId] = sidebarState
         sessionMonitors[windowId] = monitor
+        documentTabStates[windowId] = tabState
         windowConfigs[windowId] = WindowConfig(
             workingDirectory: dir,
             claudeOptions: opts,
@@ -501,12 +561,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dir = config.workingDirectory
         let sidebarState = SidebarState(defaultVisible: config.sidebarVisible, width: config.sidebarWidth.map { CGFloat($0) })
         let monitor = SessionMonitor(sessionId: sessionId, initialName: config.sessionName, workingDirectory: dir)
+        let tabState = DocumentTabState()
 
         let contentView = ContentView(
             tabId: tabId,
             sessionId: sessionId,
             sidebarState: sidebarState,
             monitor: monitor,
+            tabState: tabState,
             workingDirectory: dir,
             claudeOptions: claudeOptions
         )
@@ -538,6 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tabManagers[tabId] = TabManager(window: window, tabId: tabId)
         sidebarStates[windowId] = sidebarState
         sessionMonitors[windowId] = monitor
+        documentTabStates[windowId] = tabState
         windowConfigs[windowId] = config
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
     }
@@ -907,6 +970,7 @@ extension AppDelegate: NSWindowDelegate {
         if let windowId = windows.first(where: { $0.value === closingWindow })?.key {
             sidebarStates.removeValue(forKey: windowId)
             sessionMonitors.removeValue(forKey: windowId)
+            documentTabStates.removeValue(forKey: windowId)
             windowConfigs.removeValue(forKey: windowId)
         }
         windows = windows.filter { $0.value !== closingWindow }

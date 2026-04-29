@@ -19,6 +19,9 @@ targets:
       - path: Resources/ghostty
         type: folder
         buildPhase: resources
+      - path: Resources/markdown-viewer
+        type: folder
+        buildPhase: resources
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
