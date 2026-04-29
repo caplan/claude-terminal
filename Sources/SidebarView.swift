@@ -1,9 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @ObservedObject var monitor: SessionMonitor
     @ObservedObject var tabState: DocumentTabState
     var width: CGFloat = 280
+
+    @State private var isDropTargeted = false
 
     private var state: SessionState { monitor.state }
 
@@ -59,6 +62,34 @@ struct SidebarView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .background(VisualEffectBackground(material: .sidebar))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor, lineWidth: 2)
+                .padding(4)
+                .opacity(isDropTargeted ? 1 : 0)
+                .allowsHitTesting(false)
+        )
+        .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDropProviders(providers)
+        }
+    }
+
+    private func handleDropProviders(_ providers: [NSItemProvider]) -> Bool {
+        var accepted = false
+        for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+            accepted = true
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.isFileURL else { return }
+                let path = url.path
+                let ext = (path as NSString).pathExtension.lowercased()
+                guard ext == "md" || ext == "markdown" || ext == "mdown" else { return }
+                DispatchQueue.main.async {
+                    self.tabState.open(path: path)
+                    self.monitor.addDocument(path: path)
+                }
+            }
+        }
+        return accepted
     }
 
     private func collapseLevel(availableHeight: CGFloat) -> Int {
@@ -596,6 +627,13 @@ struct SidebarView: View {
             Button("Copy Path") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
+            }
+            Divider()
+            Button("Remove from Sidebar") {
+                if let openTab = tabState.tabs.first(where: { $0.path == path }) {
+                    tabState.close(id: openTab.id)
+                }
+                monitor.removeDocument(path: path)
             }
         }
     }

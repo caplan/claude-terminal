@@ -248,16 +248,21 @@ func runHook() {
                 state["needsInput"] = true
             }
 
-            // Track markdown documents Claude writes
-            if toolName == "Write", let dict = toolInput as? [String: Any],
-               let fp = dict["file_path"] as? String,
-               (fp.lowercased().hasSuffix(".md") || fp.lowercased().hasSuffix(".markdown")),
-               !fp.contains("/memory/") {
-                var docs = (state["documents"] as? [String]) ?? []
-                if !docs.contains(fp) {
-                    docs.append(fp)
-                    if docs.count > 5 { docs = Array(docs.suffix(5)) }
-                    state["documents"] = docs
+            // Track any markdown file Claude touches — Read, Write, Edit,
+            // MultiEdit, NotebookEdit, etc. Inspect the tool input for a
+            // file_path / notebook_path ending in .md.
+            if let dict = toolInput as? [String: Any] {
+                let candidate = (dict["file_path"] as? String) ?? (dict["notebook_path"] as? String)
+                if let fp = candidate {
+                    let lower = fp.lowercased()
+                    if (lower.hasSuffix(".md") || lower.hasSuffix(".markdown") || lower.hasSuffix(".mdown")),
+                       !fp.contains("/memory/") {
+                        var docs = (state["documents"] as? [String]) ?? []
+                        if !docs.contains(fp) {
+                            docs.append(fp)
+                            state["documents"] = docs
+                        }
+                    }
                 }
             }
         }

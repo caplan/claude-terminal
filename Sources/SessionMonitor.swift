@@ -352,6 +352,21 @@ final class SessionMonitor: ObservableObject {
         }
     }
 
+    /// Removes the doc's entry from the sidebar and persist file. The
+    /// file on disk is untouched.
+    func removeDocument(path: String) {
+        var docs = state.documents ?? []
+        guard let idx = docs.firstIndex(of: path) else { return }
+        docs.remove(at: idx)
+        state.documents = docs
+        if !isMock {
+            writeState()
+            if let dir = workingDirectory {
+                Self.persistDocuments(docs, for: dir)
+            }
+        }
+    }
+
     // MARK: - Document persistence
 
     private static var persistFilePath: String {

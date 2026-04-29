@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
         )
+        // Suppress the auto-injected "Show Tab Bar" / "Merge All Windows"
+        // items AppKit adds when native window tabbing is enabled — this
+        // app uses its own per-window tab bar.
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
