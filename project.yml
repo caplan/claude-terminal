@@ -12,7 +12,9 @@ targets:
     type: application
     platform: macOS
     sources:
-      - Sources
+      - path: Sources
+        excludes:
+          - Hook
       - Resources/Assets.xcassets
       - path: Resources/ghostty
         type: folder
@@ -39,6 +41,23 @@ targets:
       - framework: GhosttyKit.xcframework
         embed: false
       - package: Sparkle
+      - target: claude-terminal-hook
+        embed: true
+        codeSign: true
+        copyPhase:
+          destination: executables
     preBuildScripts:
       - script: '"${PROJECT_DIR}/scripts/ensure-ghosttykit.sh"'
         name: Build GhosttyKit
+
+  claude-terminal-hook:
+    type: tool
+    platform: macOS
+    sources:
+      - Sources/Hook
+    settings:
+      base:
+        PRODUCT_NAME: claude-terminal-hook
+        DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
