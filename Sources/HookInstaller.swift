@@ -21,7 +21,7 @@ enum HookInstaller {
         try? fm.createDirectory(at: hookDir, withIntermediateDirectories: true)
 
         let currentVersion = hookScriptVersion(at: hookPath)
-        let latestVersion = "27"
+        let latestVersion = "29"
 
         if currentVersion == latestVersion { return }
 
@@ -49,7 +49,7 @@ enum HookInstaller {
         try? fm.createDirectory(at: hookDir, withIntermediateDirectories: true)
 
         let currentVersion = hookScriptVersion(at: statusLinePath)
-        let latestVersion = "4"
+        let latestVersion = "5"
 
         if currentVersion == latestVersion { return }
 
@@ -156,7 +156,7 @@ enum HookInstaller {
 
     private static let hookScript = """
     #!/usr/bin/env python3
-    # VERSION=27
+    # VERSION=29
     # Claude Terminal status hook — writes session state to ~/.claude-terminal/sessions/<id>/status.json
     # Called by Claude Code hooks on various events. No-op if CLAUDE_TERMINAL_SESSION_ID is unset.
 
@@ -236,6 +236,23 @@ enum HookInstaller {
         state["subagents"] = []
         state["tasks"] = []
         state["documents"] = []
+        # Capture cost baseline from persistent map (keyed by Claude Code session_id).
+        # Claude Code's statusline cost restarts at 0 on --continue; we add the
+        # previous total as a baseline so the UI shows cumulative cost across reopens.
+        cc_session_id = event.get("session_id", "")
+        if cc_session_id:
+            state["claudeCodeSessionId"] = cc_session_id
+            persist_path = os.path.expanduser("~/.claude-terminal/cost-by-session.json")
+            try:
+                with open(persist_path) as f:
+                    _persist = json.load(f)
+                state["costBaseline"] = _persist.get(cc_session_id, {})
+            except Exception:
+                state["costBaseline"] = {}
+            # Seed displayed cost from baseline so the sidebar shows the last known
+            # total immediately on reopen, without waiting for the first statusline poll.
+            if state["costBaseline"]:
+                state["cost"] = dict(state["costBaseline"])
 
     elif hook_event == "UserPromptSubmit":
         state["status"] = "thinking"
@@ -440,7 +457,7 @@ enum HookInstaller {
 
     private static let statusLineScript = """
     #!/usr/bin/env python3
-    # VERSION=4
+    # VERSION=5
     # Claude Terminal status line — merges context_window and cost into status.json
     # Also outputs a compact status line for the terminal.
 
@@ -481,16 +498,43 @@ enum HookInstaller {
             "cacheCreationTokens": cu.get("cache_creation_input_tokens"),
         }
 
-    # Merge cost data
+    # Merge cost data. Claude Code reports the current process's cost; we add the
+    # baseline captured at SessionStart (from a previous --continue'd session) so
+    # the UI shows cumulative cost across reopens. Also persist the running total
+    # keyed by Claude Code session_id so the next reopen can restore it.
     cost = data.get("cost", {})
     if cost:
-        state["cost"] = {
-            "totalCostUsd": cost.get("total_cost_usd", 0),
-            "totalDurationMs": cost.get("total_duration_ms", 0),
-            "totalApiDurationMs": cost.get("total_api_duration_ms", 0),
-            "totalLinesAdded": cost.get("total_lines_added", 0),
-            "totalLinesRemoved": cost.get("total_lines_removed", 0),
+        baseline = state.get("costBaseline") or {}
+        total_cost = {
+            "totalCostUsd": baseline.get("totalCostUsd", 0) + cost.get("total_cost_usd", 0),
+            "totalDurationMs": baseline.get("totalDurationMs", 0) + cost.get("total_duration_ms", 0),
+            "totalApiDurationMs": baseline.get("totalApiDurationMs", 0) + cost.get("total_api_duration_ms", 0),
+            "totalLinesAdded": baseline.get("totalLinesAdded", 0) + cost.get("total_lines_added", 0),
+            "totalLinesRemoved": baseline.get("totalLinesRemoved", 0) + cost.get("total_lines_removed", 0),
         }
+        state["cost"] = total_cost
+
+        cc_session_id = data.get("session_id") or state.get("claudeCodeSessionId", "")
+        if cc_session_id:
+            persist_path = os.path.expanduser("~/.claude-terminal/cost-by-session.json")
+            persist_dir = os.path.dirname(persist_path)
+            os.makedirs(persist_dir, exist_ok=True)
+            try:
+                with open(persist_path) as f:
+                    persist = json.load(f)
+            except Exception:
+                persist = {}
+            persist[cc_session_id] = total_cost
+            pfd, ptmp = tempfile.mkstemp(dir=persist_dir, suffix=".json")
+            try:
+                with os.fdopen(pfd, "w") as f:
+                    json.dump(persist, f)
+                os.replace(ptmp, persist_path)
+            except Exception:
+                try:
+                    os.unlink(ptmp)
+                except OSError:
+                    pass
 
     # Derive network metrics from cost and turn count
     turns = state.get("conversationTurns", 0)

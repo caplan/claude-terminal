@@ -78,6 +78,8 @@ struct SessionState: Codable, Equatable {
     var status: SessionStatus
     var contextUsage: ContextUsage?
     var cost: CostInfo?
+    var costBaseline: CostInfo?
+    var claudeCodeSessionId: String?
     var currentToolName: String?
     var toolDetail: String?
     var subagents: [SubagentInfo]
@@ -91,7 +93,8 @@ struct SessionState: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case sessionName, sessionNameOverride, modelName, workingDirectory
-        case status, contextUsage, cost, currentToolName, toolDetail
+        case status, contextUsage, cost, costBaseline, claudeCodeSessionId
+        case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput
         case apiSendMs = "_apiSendMs"
     }

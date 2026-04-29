@@ -98,6 +98,49 @@ final class SessionMonitor: ObservableObject {
         }
     }
 
+    func resetCost() {
+        let zero = CostInfo(totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: 0, totalLinesRemoved: 0)
+        // Set baseline to the negative of the current displayed total so that on the
+        // next statusline poll, displayed = reported + baseline cancels out the cost
+        // already accumulated in the current process.
+        let current = state.cost ?? zero
+        let previousBaseline = state.costBaseline ?? zero
+        state.costBaseline = CostInfo(
+            totalCostUsd: previousBaseline.totalCostUsd - current.totalCostUsd,
+            totalDurationMs: previousBaseline.totalDurationMs - current.totalDurationMs,
+            totalApiDurationMs: previousBaseline.totalApiDurationMs - current.totalApiDurationMs,
+            totalLinesAdded: previousBaseline.totalLinesAdded - current.totalLinesAdded,
+            totalLinesRemoved: previousBaseline.totalLinesRemoved - current.totalLinesRemoved
+        )
+        state.cost = zero
+        guard !isMock else { return }
+        writeState()
+        // Clear the persisted running total for this Claude Code session so a reopen
+        // also starts at zero.
+        if let cc = state.claudeCodeSessionId {
+            watchQueue.async {
+                let persistPath = NSString(string: "~/.claude-terminal/cost-by-session.json").expandingTildeInPath
+                var map: [String: Any] = [:]
+                if let data = FileManager.default.contents(atPath: persistPath),
+                   let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    map = parsed
+                }
+                map[cc] = [
+                    "totalCostUsd": 0,
+                    "totalDurationMs": 0,
+                    "totalApiDurationMs": 0,
+                    "totalLinesAdded": 0,
+                    "totalLinesRemoved": 0
+                ]
+                let dir = (persistPath as NSString).deletingLastPathComponent
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                if let data = try? JSONSerialization.data(withJSONObject: map) {
+                    try? data.write(to: URL(fileURLWithPath: persistPath), options: .atomic)
+                }
+            }
+        }
+    }
+
     func renameSession(_ name: String?) {
         overriddenName = name
         state.sessionName = name
