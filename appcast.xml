@@ -18,5 +18,18 @@
         length="15971009"
         type="application/octet-stream" />
     </item>
+    <item>
+      <title>Version 0.29.2</title>
+      <link>https://github.com/caplan/claude-terminal/releases/tag/v0.29.2</link>
+      <sparkle:version>31</sparkle:version>
+      <sparkle:shortVersionString>0.29.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 29 Apr 2026 00:08:25 +0000</pubDate>
+      <enclosure
+        url="https://github.com/caplan/claude-terminal/releases/download/v0.29.2/claude-terminal-0.29.2.dmg"
+        sparkle:edSignature="cSi+7EbjuwgsAo9eJSqlB5vklAND0ds0zC3T2LhrqORNFGX3xUmWvzK3CIAZv87418J1JvAYEi3onJkUqDWdCQ=="
+        length="18037213"
+        type="application/x-apple-diskimage" />
+    </item>
   </channel>
 </rss>
