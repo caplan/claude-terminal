@@ -5,5 +5,18 @@
     <link>https://github.com/caplan/claude-terminal</link>
     <description>Updates for Claude Terminal</description>
     <language>en</language>
+    <item>
+      <title>Version 0.29.1</title>
+      <link>https://github.com/caplan/claude-terminal/releases/tag/v0.29.1</link>
+      <sparkle:version>30</sparkle:version>
+      <sparkle:shortVersionString>0.29.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 29 Apr 2026 00:00:38 +0000</pubDate>
+      <enclosure
+        url="https://github.com/caplan/claude-terminal/releases/download/v0.29.1/claude-terminal-0.29.1.zip"
+        sparkle:edSignature="rNcDZ/oCR/NxxqJW7RcQ3yeb3xMAZ++TTMaT2E4daWyHMvLhhoa5oSFzK8Otdq8OasR0u+49qSpPqMtWT6tgBg=="
+        length="15971009"
+        type="application/octet-stream" />
+    </item>
   </channel>
 </rss>
