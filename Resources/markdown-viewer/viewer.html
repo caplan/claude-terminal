@@ -39,27 +39,21 @@
         return defaultCode(code, lang, escaped);
       };
 
-      // GitHub-style heading slugger so in-document anchor links work.
-      // Marked's parsed `text` arg may contain HTML; strip it before slugging.
-      const slugCounts = {};
-      function resetSlugs() { for (const k in slugCounts) delete slugCounts[k]; }
-      function slugify(text) {
-        const plain = String(text).replace(/<[^>]+>/g, '');
-        let slug = plain.toLowerCase()
+      // GitHub-style heading slugger used in a post-render DOM pass. This is
+      // more robust than overriding marked's renderer — it survives DOMPurify
+      // and any future change to the Renderer API.
+      function slugify(text, counts) {
+        let slug = String(text || '').toLowerCase()
           .trim()
           .replace(/[^\p{L}\p{N} \-_]/gu, '')
           .replace(/\s+/g, '-')
           .replace(/-+/g, '-')
           .replace(/^-+|-+$/g, '');
         if (!slug) slug = 'section';
-        const count = slugCounts[slug] || 0;
-        slugCounts[slug] = count + 1;
+        const count = counts[slug] || 0;
+        counts[slug] = count + 1;
         return count === 0 ? slug : slug + '-' + count;
       }
-      renderer.heading = function (text, level) {
-        const id = slugify(text);
-        return '<h' + level + ' id="' + id + '">' + text + '</h' + level + '>';
-      };
 
       marked.setOptions({ gfm: true, breaks: false, renderer: renderer });
 
@@ -78,10 +72,33 @@
       window.render = async function (src) {
         if (!ready) { pending = src; return; }
         const prevScroll = window.scrollY;
-        resetSlugs();
         const html = marked.parse(src || '');
         const safe = DOMPurify.sanitize(html, purifyConfig);
         el.innerHTML = safe;
+
+        // Assign slugged ids to headings after sanitization so in-document
+        // anchor links work. Use a fresh counter each render so ids stay
+        // stable across hot reloads.
+        const counts = {};
+        el.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(function (h) {
+          h.id = slugify(h.textContent, counts);
+        });
+
+        // Explicit click handler on #-anchors. WKWebView's default fragment
+        // navigation is unreliable when innerHTML is replaced by a hot
+        // reload, so scroll manually and defeat same-hash no-op.
+        el.querySelectorAll('a[href^="#"]').forEach(function (a) {
+          a.addEventListener('click', function (ev) {
+            const href = a.getAttribute('href') || '';
+            if (href.length <= 1) return;
+            const target = document.getElementById(href.slice(1));
+            if (!target) return;
+            ev.preventDefault();
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            history.replaceState(null, '', href);
+          });
+        });
+
         try {
           await mermaid.run({ querySelector: '.mermaid' });
         } catch (e) {
