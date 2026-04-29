@@ -61,3 +61,7 @@ targets:
         DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
+        # Prevent xcodebuild archive from treating this as a standalone
+        # distributable; it's only embedded inside the main app.
+        SKIP_INSTALL: YES
+        INSTALL_PATH: ""
