@@ -164,13 +164,14 @@ func runHook() {
         state["documents"] = []
         if let ccId = event["session_id"] as? String, !ccId.isEmpty {
             state["claudeCodeSessionId"] = ccId
+            // Seed displayed cost from last persisted value so the sidebar
+            // shows something immediately on reopen until the first statusline
+            // poll arrives with the authoritative cumulative total.
             let persist = readPersistMap()
-            if let baseline = persist[ccId], baseline["totalCostUsd"] != nil {
-                state["costBaseline"] = baseline
-                state["cost"] = baseline // seed displayed cost so it shows immediately on reopen
-            } else {
-                state.removeValue(forKey: "costBaseline")
+            if let last = persist[ccId], last["totalCostUsd"] != nil {
+                state["cost"] = last
             }
+            state.removeValue(forKey: "costBaseline")
         }
 
     case "UserPromptSubmit":
@@ -403,25 +404,22 @@ func runStatusLine() {
         state["contextUsage"] = usage
     }
 
-    // Cost: displayed = baseline (from memory state) + current-process reported
+    // Cost: Claude Code's statusline already reports cumulative session totals
+    // across --continue, so use them directly. The SessionStart hook seeds
+    // state["cost"] from the persist file as a placeholder until the first
+    // real poll arrives.
     if let cost = data["cost"] as? [String: Any] {
-        let baseline = (state["costBaseline"] as? [String: Any]) ?? [:]
         let repUsd = (cost["total_cost_usd"] as? NSNumber)?.doubleValue ?? 0
         let repDur = (cost["total_duration_ms"] as? NSNumber)?.intValue ?? 0
         let repApiDur = (cost["total_api_duration_ms"] as? NSNumber)?.intValue ?? 0
         let repAdd = (cost["total_lines_added"] as? NSNumber)?.intValue ?? 0
         let repRem = (cost["total_lines_removed"] as? NSNumber)?.intValue ?? 0
-        let blUsd = (baseline["totalCostUsd"] as? NSNumber)?.doubleValue ?? 0
-        let blDur = (baseline["totalDurationMs"] as? NSNumber)?.intValue ?? 0
-        let blApiDur = (baseline["totalApiDurationMs"] as? NSNumber)?.intValue ?? 0
-        let blAdd = (baseline["totalLinesAdded"] as? NSNumber)?.intValue ?? 0
-        let blRem = (baseline["totalLinesRemoved"] as? NSNumber)?.intValue ?? 0
         let totalCost: [String: Any] = [
-            "totalCostUsd": blUsd + repUsd,
-            "totalDurationMs": blDur + repDur,
-            "totalApiDurationMs": blApiDur + repApiDur,
-            "totalLinesAdded": blAdd + repAdd,
-            "totalLinesRemoved": blRem + repRem,
+            "totalCostUsd": repUsd,
+            "totalDurationMs": repDur,
+            "totalApiDurationMs": repApiDur,
+            "totalLinesAdded": repAdd,
+            "totalLinesRemoved": repRem,
         ]
         state["cost"] = totalCost
 
