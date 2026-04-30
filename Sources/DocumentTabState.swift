@@ -14,6 +14,30 @@ final class DocumentTabState: ObservableObject {
     @Published var findActive: Bool = false
     @Published var findQuery: String = ""
 
+    // App-wide page zoom for the markdown viewer, 1.0 = 100%. Persisted in
+    // UserDefaults; each DocumentTabState loads the shared value on init and
+    // writes back on change.
+    @Published var zoomLevel: Double = {
+        let saved = UserDefaults.standard.double(forKey: "markdownZoomLevel")
+        return saved > 0 ? saved : 1.0
+    }() {
+        didSet {
+            UserDefaults.standard.set(zoomLevel, forKey: "markdownZoomLevel")
+        }
+    }
+
+    func zoomIn() {
+        zoomLevel = min(3.0, zoomLevel + 0.1)
+    }
+
+    func zoomOut() {
+        zoomLevel = max(0.5, zoomLevel - 0.1)
+    }
+
+    func zoomReset() {
+        zoomLevel = 1.0
+    }
+
     // Set by whichever MarkdownViewerView is currently visible so the
     // find bar / menu shortcuts can drive its WKWebView.
     weak var activeWebView: WKWebView?

@@ -17,6 +17,7 @@ struct MarkdownViewerView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = context.coordinator
+        webView.pageZoom = CGFloat(tabState.zoomLevel)
         context.coordinator.webView = webView
         context.coordinator.load(path: path)
         if tabState.active == tabId {
@@ -28,6 +29,10 @@ struct MarkdownViewerView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.webView = nsView
         context.coordinator.load(path: path)
+        let desired = CGFloat(tabState.zoomLevel)
+        if abs(nsView.pageZoom - desired) > 0.001 {
+            nsView.pageZoom = desired
+        }
         if tabState.active == tabId {
             tabState.activeWebView = nsView
         }

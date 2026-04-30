@@ -12,8 +12,7 @@ struct SidebarView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let plan = collapsePlan(availableHeight: geo.size.height - 32)
-            let collapse = plan.level
+            let collapse = collapseLevel(availableHeight: geo.size.height - 32)
             VStack(alignment: .leading, spacing: 12) {
                 headerSection
                 sectionCard { statusSection }
@@ -25,10 +24,13 @@ struct SidebarView: View {
                     sectionCard { tasksSection }
                 }
                 if let docs = state.documents?.filter({ FileManager.default.fileExists(atPath: $0) }), !docs.isEmpty {
-                    sectionCard { documentsSection(docs, collapsedCount: plan.collapsedDocs) }
+                    ScrollView(.vertical, showsIndicators: false) {
+                        sectionCard { documentsSection(docs.reversed()) }
+                    }
+                    .frame(maxHeight: .infinity)
+                } else {
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
 
                 if let net = state.network, net.hasData {
                     sectionCard {
@@ -93,32 +95,20 @@ struct SidebarView: View {
         return accepted
     }
 
-    private struct CollapsePlan {
-        let level: Int          // 0 full, 1 net small, 2 +cost small, 3 +ctx small
-        let collapsedDocs: Int  // oldest N docs shown as filename-only
-    }
-
     private func collapseLevel(availableHeight: CGFloat) -> Int {
-        collapsePlan(availableHeight: availableHeight).level
-    }
-
-    private func collapsePlan(availableHeight: CGFloat) -> CollapsePlan {
-        let docs = state.documents?.filter { FileManager.default.fileExists(atPath: $0) } ?? []
-        let docCount = docs.count
-
-        var topBase: CGFloat = 90 + 12 + 94
+        var fixed: CGFloat = 90 + 12 + 94
         if !state.subagents.isEmpty {
-            topBase += 12 + CGFloat(32 + state.subagents.count * 52) + 24
+            fixed += 12 + CGFloat(32 + state.subagents.count * 52) + 24
         }
         if state.tasks.contains(where: { $0.status != "completed" }) {
-            topBase += 12 + CGFloat(32 + state.tasks.count * 32) + 24
+            fixed += 12 + CGFloat(32 + state.tasks.count * 32) + 24
         }
-
-        func docsHeight(collapsed: Int) -> CGFloat {
-            guard docCount > 0 else { return 0 }
-            let full = docCount - collapsed
-            // section header + card padding + spacing
-            return 12 + 32 + 24 + CGFloat(full * 62 + collapsed * 24)
+        // Reserve a minimum viewport for the scrolling Documents area so it
+        // stays visible even when many docs are present. Cost / context /
+        // network sections always fit at the bottom.
+        let hasDocs = (state.documents?.contains { FileManager.default.fileExists(atPath: $0) }) == true
+        if hasDocs {
+            fixed += 12 + 32 + 24 + 62
         }
 
         let netFull: CGFloat = state.network?.hasData == true ? 12 + 80 : 0
@@ -128,23 +118,10 @@ struct SidebarView: View {
         let ctxFull: CGFloat = state.contextUsage != nil ? 12 + 144 : 0
         let ctxSmall: CGFloat = state.contextUsage != nil ? 12 + 44 : 0
 
-        func fits(level: Int, collapsedDocs: Int) -> Bool {
-            let net = level >= 1 ? netSmall : netFull
-            let cost = level >= 2 ? costSmall : costFull
-            let ctx = level >= 3 ? ctxSmall : ctxFull
-            return topBase + docsHeight(collapsed: collapsedDocs) + net + cost + ctx <= availableHeight
-        }
-
-        // First try collapsing just the bottom sections (cheap — one-line summaries).
-        for level in 0...3 where fits(level: level, collapsedDocs: 0) {
-            return CollapsePlan(level: level, collapsedDocs: 0)
-        }
-        // Still overflowing → start collapsing docs, oldest first, with the bottom
-        // sections already at their tightest.
-        for collapsed in 1...max(docCount, 1) where fits(level: 3, collapsedDocs: collapsed) {
-            return CollapsePlan(level: 3, collapsedDocs: collapsed)
-        }
-        return CollapsePlan(level: 3, collapsedDocs: docCount)
+        if fixed + netFull + ctxFull + costFull <= availableHeight { return 0 }
+        if fixed + netSmall + ctxFull + costFull <= availableHeight { return 1 }
+        if fixed + netSmall + ctxFull + costSmall <= availableHeight { return 2 }
+        return 3
     }
 
     private func sectionCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -605,16 +582,16 @@ struct SidebarView: View {
         }
     }
 
-    private func documentsSection(_ docs: [String], collapsedCount: Int) -> some View {
+    private func documentsSection<S: Sequence>(_ docs: S) -> some View where S.Element == String {
         VStack(alignment: .leading, spacing: 6) {
             sectionHeader("Documents")
-            ForEach(Array(docs.enumerated()), id: \.element) { index, path in
-                documentCard(path: path, collapsed: index < collapsedCount)
+            ForEach(Array(docs), id: \.self) { path in
+                documentCard(path: path)
             }
         }
     }
 
-    private func documentCard(path: String, collapsed: Bool) -> some View {
+    private func documentCard(path: String) -> some View {
         let meta = DocumentExcerptCache.excerpt(for: path)
         let isMarkdown = path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown")
         return VStack(alignment: .leading, spacing: 3) {
@@ -628,7 +605,7 @@ struct SidebarView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            if !collapsed, !meta.title.isEmpty || !meta.excerpt.isEmpty {
+            if !meta.title.isEmpty || !meta.excerpt.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     if !meta.title.isEmpty {
                         Text(meta.title)

@@ -711,6 +711,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
         viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Actual Size", action: #selector(docZoomReset), keyEquivalent: "0")
+        viewMenu.addItem(withTitle: "Zoom In", action: #selector(docZoomIn), keyEquivalent: "+")
+        viewMenu.addItem(withTitle: "Zoom Out", action: #selector(docZoomOut), keyEquivalent: "-")
+        viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Rename Session...", action: #selector(renameSession), keyEquivalent: "R")
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
@@ -730,6 +734,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openPreferences() {
         PreferencesWindowController.shared.showWindow()
+    }
+
+    @objc private func docZoomIn() {
+        frontTabState()?.zoomIn()
+    }
+
+    @objc private func docZoomOut() {
+        frontTabState()?.zoomOut()
+    }
+
+    @objc private func docZoomReset() {
+        frontTabState()?.zoomReset()
     }
 
     @objc private func findInDoc() {

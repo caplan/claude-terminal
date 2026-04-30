@@ -104,6 +104,12 @@
         } catch (e) {
           console.warn('mermaid render error', e);
         }
+
+        // Enable pan/zoom on each rendered mermaid SVG independently of the
+        // page zoom. Plain wheel/trackpad scroll passes through to the page;
+        // Cmd/Ctrl + wheel zooms the diagram around the cursor. Click-drag
+        // pans. Double-click resets.
+        el.querySelectorAll('pre.mermaid svg').forEach(enableMermaidPanZoom);
         el.querySelectorAll('pre code').forEach(function (block) {
           if (!block.classList.contains('hljs')) {
             try { hljs.highlightElement(block); } catch (_) {}
@@ -137,6 +143,73 @@
       window.setScroll = function (y) {
         window.scrollTo(0, y || 0);
       };
+
+      function enableMermaidPanZoom(svg) {
+        if (svg.__panZoomInitialized) return;
+        svg.__panZoomInitialized = true;
+
+        const pre = svg.closest('pre.mermaid');
+        if (pre && !pre.querySelector('.mermaid-hint')) {
+          const hint = document.createElement('div');
+          hint.className = 'mermaid-hint';
+          hint.textContent = '⌘ + scroll: zoom  ·  drag: pan  ·  dbl-click: reset';
+          pre.appendChild(hint);
+        }
+
+        let scale = 1, tx = 0, ty = 0;
+        let dragging = false, startX = 0, startY = 0;
+
+        svg.style.cursor = 'grab';
+        svg.style.transformOrigin = '0 0';
+        svg.style.userSelect = 'none';
+
+        function apply() {
+          svg.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+        }
+
+        svg.addEventListener('wheel', function (e) {
+          if (!e.ctrlKey && !e.metaKey) return; // let page scroll
+          e.preventDefault();
+          const rect = svg.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const factor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
+          const next = Math.max(0.2, Math.min(10, scale * factor));
+          const k = next / scale;
+          tx = mx - (mx - tx) * k;
+          ty = my - (my - ty) * k;
+          scale = next;
+          apply();
+        }, { passive: false });
+
+        svg.addEventListener('mousedown', function (e) {
+          if (e.button !== 0) return;
+          dragging = true;
+          startX = e.clientX - tx;
+          startY = e.clientY - ty;
+          svg.style.cursor = 'grabbing';
+          e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          tx = e.clientX - startX;
+          ty = e.clientY - startY;
+          apply();
+        });
+
+        window.addEventListener('mouseup', function () {
+          if (!dragging) return;
+          dragging = false;
+          svg.style.cursor = 'grab';
+        });
+
+        svg.addEventListener('dblclick', function (e) {
+          e.preventDefault();
+          scale = 1; tx = 0; ty = 0;
+          apply();
+        });
+      }
 
       // Signal readiness after libs are defined.
       ready = true;

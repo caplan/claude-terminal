@@ -21,13 +21,43 @@ html, body {
 .markdown-body pre.mermaid {
   background: transparent !important;
   padding: 8px 0 !important;
-  overflow: visible !important;
+  overflow: hidden !important;
   text-align: center;
+  position: relative;
 }
 
 .markdown-body pre.mermaid svg {
   max-width: 100%;
   height: auto;
+  display: inline-block;
+}
+
+.markdown-body pre.mermaid .mermaid-hint {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease-in-out;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  white-space: nowrap;
+}
+
+.markdown-body pre.mermaid:hover .mermaid-hint {
+  opacity: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .markdown-body pre.mermaid .mermaid-hint {
+    background: rgba(255, 255, 255, 0.85);
+    color: #000;
+  }
 }
 
 .markdown-body pre > code {
