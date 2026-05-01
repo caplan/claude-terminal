@@ -1,140 +1,94 @@
 # claude-terminal
 
-A native macOS app for running Claude Code sessions with a live sidebar showing real-time session state.
+A native macOS app for running [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) sessions, with a live sidebar, inline markdown preview, and multi-window session management.
 
-Built on [Ghostty](https://ghostty.org)'s terminal engine with a purpose-built UI for Claude Code workflows.
-
-## Features
-
-- **Live sidebar** — status, current tool with verb/detail, subagent tool details, context, cost, tasks
-- **API latency** — live metrics: last response time, average per turn, API time percentage
-- **Documents** — persistent clickable links to .md files Claude writes, with right-click context menu (Open With, Show in Finder, Copy Path). Excludes memory files.
-- **Clickable file paths** — tool detail paths open in default app when clicked
-- **Task dependencies** — tasks sorted by dependency order with indentation and blocked indicators
-- **Parallel tool calls** — all concurrent tools shown simultaneously in the status card
-- **Adaptive layout** — API latency, cost, and context cards auto-collapse when window is short
-- **Resizable sidebar** — drag the edge to resize (220-500pt), width persists across sessions
-- **Jira integration** — detects ticket from branch name, shows clickable link with wrapping title
-- **Project favicons** — auto-detected from working directory, shown in sidebar and Window menu
-- **Multi-window** — run multiple Claude sessions side by side, switch via Window menu (Cmd+1-9)
-- **Menubar icon** — hover (or click) the menubar icon for a grid of all sessions, current and recent. Each tile shows session name, directory, status, and cost, with background color derived from the project's favicon. Click a tile to focus (if open) or reopen (if past). Toggle in Settings > Menu Bar.
-- **Save & restore** — save open windows on quit, reopen with `--continue` on next launch
-- **Notifications** — native macOS notifications when Claude needs input. Toggle in Settings.
-- **Session persistence** — window size/position and renamed session names persist across restarts
-- **Subagent management** — right-click to Force Quit agents from sidebar
-- **Rename sessions** — via pencil icon in sidebar or View > Rename Session (Cmd+Shift+R)
-- **Uninstall** — clean removal via menu item or `scripts/uninstall.sh`
+Built on [Ghostty](https://ghostty.org)'s terminal engine.
 
 ## Install
 
-### From release
+1. Download `claude-terminal-X.Y.Z.dmg` from the [latest release](../../releases/latest).
+2. Open the DMG and drag **claude-terminal** to `/Applications`.
+3. Launch it. Updates arrive automatically via Sparkle.
 
-Download `claude-terminal.dmg` from [Releases](../../releases), open it, drag the app to `~/Applications`, then:
-
-```bash
-xattr -cr ~/Applications/claude-terminal.app
-```
-
-### From source
-
-Requires Xcode and [xcodegen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`). No zig or ghostty checkout needed — the build script downloads a prebuilt `GhosttyKit.xcframework` release asset and verifies its SHA-256.
+Requires macOS 14 and the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code/setup):
 
 ```bash
-git clone https://github.com/caplan/claude-terminal.git
-cd claude-terminal
-
-# Download GhosttyKit.xcframework (~132MB, cached in ~/.cache/claude-terminal/)
-./scripts/ensure-ghosttykit.sh
-
-# Generate xcodeproj
-xcodegen generate
-
-# Build
-xcodebuild -project claude-terminal.xcodeproj -scheme claude-terminal -configuration Release build
-
-# Install
-cp -R ~/Library/Developer/Xcode/DerivedData/claude-terminal-*/Build/Products/Release/claude-terminal.app /Applications/ && codesign --force --deep --sign - /Applications/claude-terminal.app
+npm install -g @anthropic-ai/claude-code
 ```
 
-## CLI Usage
+## Using it
+
+On first launch you'll see a directory picker. Pick the project folder you want to work in and claude-terminal starts a Claude Code session there. Every new window = a separate Claude session.
+
+### Command line
+
+On first launch the app offers to install a symlink at `~/.local/bin/claude-terminal`. Once installed:
 
 ```bash
-# Open with directory picker
-claude-terminal
-
-# Open specific directory
-claude-terminal ~/myproject
-
-# Named session
-claude-terminal --name "feature-work" ~/myproject
-
-# Pass arguments through to Claude CLI
-claude-terminal ~/myproject -- --resume --dangerously-skip-permissions
+claude-terminal                              # directory picker
+claude-terminal ~/projects/myapp             # specific directory
+claude-terminal --name "feature work" .      # named session
+claude-terminal ~/myapp -- --resume          # pass args through to claude
 ```
 
-If the app is already running, the CLI opens a new window in the existing instance.
+If the app is already running, the CLI opens a new window in the same process.
 
-On first launch, the app offers to install a symlink at `~/.local/bin/claude-terminal`.
+## What you get
 
-## How it works
+### Live sidebar
 
-Each window launches Claude Code in a Ghostty terminal with a unique session ID. Two scripts feed live data into a JSON file that the sidebar watches:
+- Status, current tool, and active subagents — color-tinted by state (thinking, tool use, streaming).
+- Context window usage, cost, API latency, and running token counts.
+- Task list with dependency ordering and blocked-task indicators.
+- Jira ticket detection from your branch name, with clickable link.
+- Project favicons auto-loaded from the working directory.
+- Auto-collapses to single-line summaries when the window is short; cost and context always stay visible.
 
-1. **Hook script** — fires on tool use, agent start/stop, task events, prompt submit
-2. **Status line script** — polled every 3s for context window, cost, and model info
+### Inline markdown viewer
 
-The sidebar updates in real time as Claude works.
+- Any `.md` file Claude reads, writes, or edits shows up in the sidebar as a preview card (filename + first heading + excerpt).
+- Click a card — or drag any `.md` onto the sidebar — to open it in a tab that covers the terminal area, leaving the sidebar in place.
+- Full GitHub-flavored markdown: tables, task lists, fenced code with syntax highlighting, and **mermaid diagrams** rendered inline.
+- Each mermaid diagram supports ⌘-scroll zoom, drag-pan, and double-click reset.
+- `Cmd+F` searches the open document; `Cmd+=` / `Cmd+-` / `Cmd+0` zoom.
+- Files auto-reload when Claude edits them; scroll position survives tab switching and quitting the app.
+- Open `.md` files from Finder with **Open With → claude-terminal**.
+
+### Window + session management
+
+- Multi-window: run several Claude sessions side by side, switch via the Window menu (`Cmd+1`-`Cmd+9`) or the menu-bar icon.
+- Menu-bar icon pops up a grid of all sessions (active + recently used) — click to focus or reopen. Toggle the trigger (hover vs click) and visibility in Settings → Menu Bar.
+- Window size, position, sidebar width, and renamed session names persist across restarts.
+- **Save & Quit** reopens every window with `--continue` on next launch, including open doc tabs and scroll positions.
+- Subagents can be force-quit from the sidebar with right-click.
+
+### Integrations
+
+- Native macOS notifications when Claude needs your attention (toggle in Settings).
+- Jira CLI integration for ticket titles (supports both `ankitpokhrel/jira-cli` and `go-jira`).
 
 ## Keyboard shortcuts
 
 | Action | Shortcut |
-|--------|----------|
-| New Session | Cmd+N |
-| Open Session | Cmd+O |
-| Close Window | Cmd+W |
-| Toggle Sidebar | Cmd+B |
-| Rename Session | Cmd+Shift+R |
-| Switch Window 1-9 | Cmd+1 through Cmd+9 |
-| Resize Sidebar | Drag left edge |
+|---|---|
+| New session | `Cmd+N` |
+| Open session | `Cmd+O` |
+| Close window | `Cmd+W` |
+| Toggle sidebar | `Cmd+B` |
+| Rename session | `Cmd+Shift+R` |
+| Switch to window 1-9 | `Cmd+1` … `Cmd+9` |
+| Find in open markdown doc | `Cmd+F` |
+| Find next / previous | `Cmd+G` / `Cmd+Shift+G` |
+| Zoom markdown in / out / reset | `Cmd+=` / `Cmd+-` / `Cmd+0` |
 
-## Requirements
+## Uninstall
 
-- macOS 14.0+
-- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
+`claude-terminal` menu → **Uninstall Claude Terminal…** removes the app from `/Applications`, deletes `~/.claude-terminal/`, strips the claude-terminal hook + statusLine entries from `~/.claude/settings.json`, removes the CLI symlink, and clears app preferences.
 
-## Releasing
+## Contributing
 
-Releases ship as Developer ID-signed, notarized `.app` bundles attached to GitHub Releases. The app auto-updates via [Sparkle](https://sparkle-project.org/) against an `appcast.xml` hosted in this repo.
+Source layout, build instructions, release process, and architecture notes live under [docs/](./docs/) and [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-### One-time setup
+## License
 
-1. **Apple Developer cert.** In Xcode → Settings → Accounts, sign in with your Apple ID and use "Manage Certificates…" → `+` → "Developer ID Application". Grab the 10-char Team ID from [developer.apple.com/account](https://developer.apple.com/account) → Membership.
-
-2. **Shell env.** Add to `~/.zshrc`:
-
-   ```bash
-   export DEVELOPMENT_TEAM=XXXXXXXXXX
-   ```
-
-3. **Notarytool keychain profile.** Create an app-specific password at [appleid.apple.com](https://appleid.apple.com), then store credentials once:
-
-   ```bash
-   xcrun notarytool store-credentials "claude-terminal-notarytool" \
-     --apple-id your-apple-id@example.com \
-     --team-id "$DEVELOPMENT_TEAM" \
-     --password <app-specific-password>
-   ```
-
-4. **Sparkle EdDSA keys.** After the first Release build resolves Sparkle via SPM, its tools land at `~/Library/Developer/Xcode/DerivedData/claude-terminal-*/SourcePackages/artifacts/sparkle/Sparkle/bin/`. Run `generate_keys` once — it stores the private key in the login keychain and prints the public key. Paste the public key into `Resources/Info.plist` under `SUPublicEDKey`.
-
-5. **GitHub CLI.** `brew install gh && gh auth login`.
-
-### Cut a release
-
-```bash
-scripts/release.sh 0.30.0
-```
-
-This bumps the version in `project.yml`, archives, exports with Developer ID, notarizes, staples, re-zips, signs the update with Sparkle, appends an `<item>` to `appcast.xml`, commits + tags, and creates the GitHub Release with the zipped `.app` attached.
-
-Users running older versions get an update prompt within 24h (or on next `Check for Updates…`).
+[MIT](./LICENSE)
