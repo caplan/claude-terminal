@@ -20,6 +20,8 @@ final class MenuBarController: NSObject {
     }
 
     func teardown() {
+        hoverDismissTimer?.invalidate()
+        hoverDismissTimer = nil
         removeClickOutsideMonitor()
         removeHoverMonitors()
         panel?.close()

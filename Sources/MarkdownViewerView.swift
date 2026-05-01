@@ -104,7 +104,13 @@ struct MarkdownViewerView: NSViewRepresentable {
         private func renderFromDisk() {
             guard let path = currentPath else { return }
             let url = URL(fileURLWithPath: path)
-            let source = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            let source: String
+            do {
+                source = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                NSLog("[claude-terminal] markdown read failed for %@: %@", path, error.localizedDescription)
+                source = "> _Could not read this file as UTF-8. \(error.localizedDescription)_"
+            }
             if isHarnessLoaded {
                 evaluateRender(source: source)
             } else {

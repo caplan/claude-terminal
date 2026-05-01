@@ -195,15 +195,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func openWindowDirectly(workingDirectory dir: String, claudeOptions opts: String?, sessionName: String?) {
+    /// Shared window builder. Creates NSWindow + ContentView + all per-window
+    /// state objects, registers everything in the parallel dictionaries, and
+    /// returns the DocumentTabState so restore paths can reopen tabs.
+    @discardableResult
+    private func installWindow(
+        workingDirectory dir: String,
+        claudeOptions opts: String?,
+        sessionName: String?,
+        sidebarVisible: Bool,
+        sidebarWidth: CGFloat? = nil,
+        storedConfig: WindowConfig? = nil
+    ) -> (windowId: UUID, tabState: DocumentTabState) {
         let windowId = UUID()
         let tabId = UUID()
         let sessionId = UUID()
-        let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
-        let sidebarState = SidebarState(defaultVisible: sidebarVisible)
+        let sidebarState = SidebarState(defaultVisible: sidebarVisible, width: sidebarWidth)
         let resolvedName = sessionName ?? (dir as NSString).lastPathComponent
         let monitor = SessionMonitor(sessionId: sessionId, initialName: resolvedName, workingDirectory: dir)
         let tabState = DocumentTabState()
+
         let contentView = ContentView(
             tabId: tabId,
             sessionId: sessionId,
@@ -213,13 +224,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workingDirectory: dir,
             claudeOptions: opts
         )
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = resolvedName
+        window.title = monitor.state.sessionName ?? resolvedName
         window.minSize = NSSize(width: 600, height: 300)
         window.contentMinSize = NSSize(width: 600, height: 300)
 
@@ -227,8 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 600)
         window.contentView = hostingView
 
-        let autosaveKey = resolvedName
-        window.setFrameAutosaveName("claude-terminal-\(autosaveKey)")
+        window.setFrameAutosaveName("claude-terminal-\(resolvedName)")
         if !window.setFrameUsingName(window.frameAutosaveName) {
             window.center()
         }
@@ -241,13 +252,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarStates[windowId] = sidebarState
         sessionMonitors[windowId] = monitor
         documentTabStates[windowId] = tabState
-        windowConfigs[windowId] = WindowConfig(
+        windowConfigs[windowId] = storedConfig ?? WindowConfig(
             workingDirectory: dir,
             claudeOptions: opts,
             sessionName: resolvedName,
             sidebarVisible: sidebarState.isVisible
         )
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
+        print("[claude-terminal] Window \(windowId) (session \(sessionId), dir \(dir), opts: \(opts ?? "none"))")
+        return (windowId, tabState)
+    }
+
+    func openWindowDirectly(workingDirectory dir: String, claudeOptions opts: String?, sessionName: String?) {
+        let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
+        installWindow(
+            workingDirectory: dir,
+            claudeOptions: opts,
+            sessionName: sessionName,
+            sidebarVisible: sidebarVisible
+        )
     }
 
     @objc func createNewWindow(workingDirectory: String? = nil, claudeOptions: String? = nil, initialName: String? = nil) {
@@ -325,60 +348,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let joined = extra.joined(separator: " ")
             opts = opts.map { $0 + " " + joined } ?? joined
         }
-        let windowId = UUID()
-        let tabId = UUID()
-        let sessionId = UUID()
         let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
-        let sidebarState = SidebarState(defaultVisible: sidebarVisible)
-        let monitor = SessionMonitor(sessionId: sessionId, initialName: resolvedName, workingDirectory: dir)
-        let tabState = DocumentTabState()
-
-        let contentView = ContentView(
-            tabId: tabId,
-            sessionId: sessionId,
-            sidebarState: sidebarState,
-            monitor: monitor,
-            tabState: tabState,
-            workingDirectory: dir,
-            claudeOptions: opts
-        )
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = monitor.state.sessionName ?? resolvedName ?? (dir as NSString).lastPathComponent
-        window.minSize = NSSize(width: 600, height: 300)
-        window.contentMinSize = NSSize(width: 600, height: 300)
-
-        let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 600)
-        window.contentView = hostingView
-
-        let autosaveKey = resolvedName ?? (dir as NSString).lastPathComponent
-        window.setFrameAutosaveName("claude-terminal-\(autosaveKey)")
-        if !window.setFrameUsingName(window.frameAutosaveName) {
-            window.center()
-        }
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-
-        windows[windowId] = window
-        tabManagers[tabId] = TabManager(window: window, tabId: tabId)
-        sidebarStates[windowId] = sidebarState
-        sessionMonitors[windowId] = monitor
-        documentTabStates[windowId] = tabState
-        windowConfigs[windowId] = WindowConfig(
+        installWindow(
             workingDirectory: dir,
             claudeOptions: opts,
-            sessionName: monitor.state.sessionName,
-            sidebarVisible: sidebarState.isVisible
+            sessionName: resolvedName,
+            sidebarVisible: sidebarVisible
         )
-        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
-        print("[claude-terminal] Window \(windowId) created (session: \(sessionId), dir: \(workingDirectory ?? "default"), options: \(claudeOptions ?? "none"))")
     }
 
     private(set) var claudePath: String = "claude"
@@ -578,53 +554,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restoreWindow(config: WindowConfig, claudeOptions: String) {
-        let windowId = UUID()
-        let tabId = UUID()
-        let sessionId = UUID()
-        let dir = config.workingDirectory
-        let sidebarState = SidebarState(defaultVisible: config.sidebarVisible, width: config.sidebarWidth.map { CGFloat($0) })
-        let monitor = SessionMonitor(sessionId: sessionId, initialName: config.sessionName, workingDirectory: dir)
-        let tabState = DocumentTabState()
-
-        let contentView = ContentView(
-            tabId: tabId,
-            sessionId: sessionId,
-            sidebarState: sidebarState,
-            monitor: monitor,
-            tabState: tabState,
-            workingDirectory: dir,
-            claudeOptions: claudeOptions
+        let (_, tabState) = installWindow(
+            workingDirectory: config.workingDirectory,
+            claudeOptions: claudeOptions,
+            sessionName: config.sessionName,
+            sidebarVisible: config.sidebarVisible,
+            sidebarWidth: config.sidebarWidth.map { CGFloat($0) },
+            storedConfig: config
         )
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = monitor.state.sessionName ?? (dir as NSString).lastPathComponent
-        window.minSize = NSSize(width: 600, height: 300)
-        window.contentMinSize = NSSize(width: 600, height: 300)
-
-        let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 600)
-        window.contentView = hostingView
-
-        let autosaveKey = config.sessionName ?? (dir as NSString).lastPathComponent
-        window.setFrameAutosaveName("claude-terminal-\(autosaveKey)")
-        if !window.setFrameUsingName(window.frameAutosaveName) {
-            window.center()
-        }
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-
-        windows[windowId] = window
-        tabManagers[tabId] = TabManager(window: window, tabId: tabId)
-        sidebarStates[windowId] = sidebarState
-        sessionMonitors[windowId] = monitor
-        documentTabStates[windowId] = tabState
-        windowConfigs[windowId] = config
 
         // Reopen markdown tabs that were open when the app last quit, and
         // prime the pending-scroll map so the first render of each doc
@@ -638,12 +575,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                let match = tabState.tabs.first(where: { $0.path == activePath }) {
                 tabState.active = match.id
             } else {
-                // No explicit active doc — default back to the terminal tab.
                 tabState.active = nil
             }
         }
-
-        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
     }
 
     // MARK: - Jira CLI Suggestion
@@ -801,7 +735,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Remove ~/.claude-terminal/
         try? fm.removeItem(atPath: "\(home)/.claude-terminal")
 
-        // Remove CLI symlink (may need admin)
         // Remove CLI symlink
         let localBinSymlink = "\(home)/.local/bin/claude-terminal"
         try? fm.removeItem(atPath: localBinSymlink)
@@ -1009,6 +942,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func recordJumpUnreadFocusIfExpected(tabId: UUID, surfaceId: UUID) {}
 
     func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self)
         menuBarController?.teardown()
         menuBarController = nil
         windows.removeAll()
@@ -1051,16 +985,19 @@ extension AppDelegate: NSMenuDelegate {
 extension AppDelegate {
     /// Called once at launch. No windows exist yet, so every session dir is
     /// orphaned from a previous run (normal quit leaves them behind). Also
-    /// drops docs-by-dir entries whose working directory no longer exists.
+    /// drops docs-by-dir / cost-by-session entries that refer to things no
+    /// longer on disk.
     static func pruneStaleFiles() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let sessionsDir = "\(home)/.claude-terminal/sessions"
         let fm = FileManager.default
+
+        let sessionsDir = "\(home)/.claude-terminal/sessions"
         if let entries = try? fm.contentsOfDirectory(atPath: sessionsDir) {
             for name in entries {
                 try? fm.removeItem(atPath: "\(sessionsDir)/\(name)")
             }
         }
+
         let docsPath = "\(home)/.claude-terminal/docs-by-dir.json"
         if let data = fm.contents(atPath: docsPath),
            let map = try? JSONSerialization.jsonObject(with: data) as? [String: [String]] {
@@ -1073,6 +1010,41 @@ extension AppDelegate {
                 }
             }
         }
+
+        let costPath = "\(home)/.claude-terminal/cost-by-session.json"
+        if let data = fm.contents(atPath: costPath),
+           let map = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let valid = knownClaudeCodeSessionIds(home: home)
+            // If Claude Code's project dir doesn't exist at all, skip pruning —
+            // Claude isn't installed or hasn't run here yet; don't wipe history.
+            guard !valid.isEmpty else { return }
+            let cleaned = map.filter { id, _ in valid.contains(id) }
+            if cleaned.count != map.count {
+                if let out = try? JSONSerialization.data(withJSONObject: cleaned, options: [.sortedKeys]) {
+                    try? out.write(to: URL(fileURLWithPath: costPath), options: .atomic)
+                }
+            }
+        }
+    }
+
+    /// Returns every Claude Code session id whose transcript file still
+    /// exists on disk under ~/.claude/projects/<proj>/<id>.jsonl.
+    private static func knownClaudeCodeSessionIds(home: String) -> Set<String> {
+        let projectsDir = "\(home)/.claude/projects"
+        let fm = FileManager.default
+        guard let projects = try? fm.contentsOfDirectory(atPath: projectsDir) else {
+            return []
+        }
+        var ids: Set<String> = []
+        let suffix = ".jsonl"
+        for proj in projects {
+            let dir = "\(projectsDir)/\(proj)"
+            guard let files = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for file in files where file.hasSuffix(suffix) {
+                ids.insert(String(file.dropLast(suffix.count)))
+            }
+        }
+        return ids
     }
 }
 

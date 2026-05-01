@@ -1,10 +1,9 @@
 import Foundation
 
-// claude-terminal-hook: Replaces the Python update-status.sh and statusline.sh.
-// Invoked by Claude Code hooks (subcommand `hook`) and statusLine (subcommand
-// `statusline`). Reads JSON from stdin, updates
-// ~/.claude-terminal/sessions/<id>/status.json, and writes a compact status line
-// to stdout for the `statusline` subcommand.
+// claude-terminal-hook: embedded helper binary invoked by Claude Code hooks
+// (subcommand `hook`) and statusLine (subcommand `statusline`). Reads JSON
+// from stdin, updates ~/.claude-terminal/sessions/<id>/status.json, and
+// writes a compact status line to stdout for the `statusline` subcommand.
 
 // MARK: - Entry point
 
@@ -55,10 +54,9 @@ func readState() -> [String: Any] {
         return ["status": "disconnected", "subagents": [], "tasks": []]
     }
     var state = obj
-    // Swift's CostInfo decoder requires all fields; drop any bad baseline.
-    if let bl = state["costBaseline"] as? [String: Any], bl["totalCostUsd"] == nil {
-        state.removeValue(forKey: "costBaseline")
-    }
+    // Strip the legacy costBaseline field that older versions wrote — cost
+    // math is now done entirely on Claude Code's reported totals.
+    state.removeValue(forKey: "costBaseline")
     return state
 }
 
@@ -182,7 +180,6 @@ func runHook() {
             if let last = persist[ccId], last["totalCostUsd"] != nil {
                 state["cost"] = last
             }
-            state.removeValue(forKey: "costBaseline")
         }
 
     case "UserPromptSubmit":

@@ -23,7 +23,10 @@ struct SidebarView: View {
                 if state.tasks.contains(where: { $0.status != "completed" }) {
                     sectionCard { tasksSection }
                 }
-                if let docs = state.documents?.filter({ FileManager.default.fileExists(atPath: $0) }), !docs.isEmpty {
+                // state.documents is pre-filtered for file existence in
+                // SessionMonitor.readAndDecode; trust it here to avoid stat
+                // syscalls on every SwiftUI redraw.
+                if let docs = state.documents, !docs.isEmpty {
                     ScrollView(.vertical, showsIndicators: false) {
                         sectionCard { documentsSection(docs.reversed()) }
                     }
@@ -106,7 +109,7 @@ struct SidebarView: View {
         // Reserve a minimum viewport for the scrolling Documents area so it
         // stays visible even when many docs are present. Cost / context /
         // network sections always fit at the bottom.
-        let hasDocs = (state.documents?.contains { FileManager.default.fileExists(atPath: $0) }) == true
+        let hasDocs = state.documents?.isEmpty == false
         if hasDocs {
             fixed += 12 + 32 + 24 + 62
         }
