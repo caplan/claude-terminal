@@ -190,7 +190,16 @@ struct SidebarView: View {
                     Text(model)
                         .font(.system(size: 13))
                         .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    if let badge = permissionBadge(state.permissionMode) {
+                    // PLAN/YOLO badge is currently disabled because Claude Code
+                    // only surfaces permission_mode in hook event payloads (not
+                    // on Shift+Tab while idle and not in the statusline JSON).
+                    // That meant the badge stayed stale until the user's next
+                    // prompt, which is worse than showing nothing. The capture
+                    // pipeline (SessionState.permissionMode, the hook/statusline
+                    // writers, and permissionBadge below) is left in place so
+                    // we can re-enable by removing `&& false` if Claude Code
+                    // ever starts emitting mode changes via hook or statusline.
+                    if let badge = permissionBadge(state.permissionMode), false {
                         Text(badge.label)
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(badge.color)

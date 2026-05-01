@@ -429,6 +429,15 @@ func runStatusLine() {
 
     var state = readState()
 
+    // Permission mode (PLAN/YOLO badge) is captured exclusively from hook
+    // events — Claude Code doesn't expose it in the statusline payload and
+    // doesn't fire any hook on Shift+Tab while idle, so the badge can only
+    // refresh when the user submits a prompt. If Claude Code ever starts
+    // including permission_mode here, this one line will pick it up.
+    if let mode = data["permission_mode"] as? String, !mode.isEmpty {
+        state["permissionMode"] = mode
+    }
+
     // Context window
     if let cw = data["context_window"] as? [String: Any] {
         let cu = (cw["current_usage"] as? [String: Any]) ?? [:]
