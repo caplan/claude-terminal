@@ -27,13 +27,13 @@ struct SidebarView: View {
                 // SessionMonitor.readAndDecode; trust it here to avoid stat
                 // syscalls on every SwiftUI redraw.
                 if let docs = state.documents, !docs.isEmpty {
-                    let compact = shouldCompactDocs(
+                    let fullCount = fullSizeDocCount(
                         docsCount: docs.count,
                         availableHeight: geo.size.height - 32,
                         collapse: collapse
                     )
                     ScrollView(.vertical, showsIndicators: false) {
-                        sectionCard { documentsSection(docs.reversed(), compact: compact) }
+                        sectionCard { documentsSection(docs.reversed(), fullCount: fullCount) }
                     }
                     .frame(maxHeight: .infinity)
                 } else {
@@ -103,11 +103,11 @@ struct SidebarView: View {
         return accepted
     }
 
-    /// Returns true when the full-size doc cards (name + title + 2-line excerpt)
-    /// would overflow the docs viewport and force scrolling. Switching to the
-    /// compact variant (filename-only row) usually fits 2-3× more rows before
-    /// the ScrollView has to kick in.
-    private func shouldCompactDocs(docsCount: Int, availableHeight: CGFloat, collapse: Int) -> Bool {
+    /// Returns how many of the top-most doc cards should be shown in their
+    /// full-size form (name + title + 2-line excerpt). The remainder, at the
+    /// bottom of the list, render in the compact single-line form. If even
+    /// all-compact overflows the viewport the ScrollView still takes over.
+    private func fullSizeDocCount(docsCount: Int, availableHeight: CGFloat, collapse: Int) -> Int {
         // Fixed height above the docs area (padding + header + status + any
         // subagents/tasks cards). Mirrors the constants in collapseLevel.
         var aboveDocs: CGFloat = 90 + 12 + 94
@@ -124,11 +124,20 @@ struct SidebarView: View {
         let costH: CGFloat = state.cost != nil ? 12 + (collapse >= 2 ? 44 : 124) : 0
         let belowDocs = netH + ctxH + costH
 
-        let docsViewport = max(0, availableHeight - aboveDocs - belowDocs)
-        // Full doc card including inter-card spacing is ~78pt; section header
-        // + sectionCard padding adds ~56pt.
-        let fullDocsHeight = 56 + CGFloat(docsCount) * 78
-        return fullDocsHeight > docsViewport
+        // Section header + sectionCard padding adds ~56pt. Full doc card
+        // (with excerpt) is ~78pt including spacing; compact card is ~28pt.
+        let chromeH: CGFloat = 56
+        let fullH: CGFloat = 78
+        let compactH: CGFloat = 28
+        let budget = max(0, availableHeight - aboveDocs - belowDocs - chromeH)
+
+        if CGFloat(docsCount) * fullH <= budget { return docsCount }
+        // Solve: full * fullH + (docsCount - full) * compactH <= budget
+        let allCompact = CGFloat(docsCount) * compactH
+        let slack = budget - allCompact
+        if slack <= 0 { return 0 }
+        let full = Int(floor(slack / (fullH - compactH)))
+        return max(0, min(docsCount, full))
     }
 
     private func collapseLevel(availableHeight: CGFloat) -> Int {
@@ -253,6 +262,41 @@ struct SidebarView: View {
         }
     }
 
+    @ViewBuilder
+    private func toolCard(tool: String, detail: String?) -> some View {
+        let color = toolColor(tool)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let detail, !detail.isEmpty {
+                    ToolDetailText(
+                        label: toolDetailLabel(tool, detail: detail),
+                        rawDetail: detail,
+                        color: color
+                    )
+                } else {
+                    Text(toolVerb(tool).capitalized)
+                        .font(.system(size: 14))
+                        .foregroundColor(color)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Skip the corner label when the detail already conveys the tool:
+            // Bash shows the command name, Read/Edit lead with "reading"/"editing".
+            if !["Bash", "Read", "Edit"].contains(tool) {
+                Text(tool)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.15))
+        )
+    }
+
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             statusHeader
@@ -264,52 +308,44 @@ struct SidebarView: View {
                     .font(.system(size: 14))
                     .foregroundColor(.primary)
             }
+            if let headline = shortAssistantHeadline {
+                assistantHeadline(text: headline)
+            }
             if let active = state.activeTools, active.count > 1 {
                 ForEach(active) { entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(entry.tool)
-                                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                                .foregroundColor(toolColor(entry.tool))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(toolColor(entry.tool).opacity(0.12))
-                                .cornerRadius(4)
-                            Text(toolVerb(entry.tool))
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                        }
-                        if let detail = entry.detail, !detail.isEmpty {
-                            ToolDetailText(
-                                label: toolDetailLabel(entry.tool, detail: detail),
-                                rawDetail: detail
-                            )
-                        }
-                    }
+                    toolCard(tool: entry.tool, detail: entry.detail)
                 }
             } else if let tool = state.currentToolName {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(tool)
-                            .font(.system(size: 13, weight: .medium, design: .monospaced))
-                            .foregroundColor(toolColor(tool))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(toolColor(tool).opacity(0.12))
-                            .cornerRadius(4)
-                        Text(toolVerb(tool))
-                            .font(.system(size: 12))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    }
-                    if let detail = state.toolDetail, !detail.isEmpty {
-                        ToolDetailText(
-                            label: toolDetailLabel(tool, detail: detail),
-                            rawDetail: detail
-                        )
-                    }
-                }
+                toolCard(tool: tool, detail: state.toolDetail)
             }
         }
+    }
+
+    /// A short one-liner shown above the tool cards whenever the session is
+    /// actively working. Uses the assistant's most recent prose if it's
+    /// ≤64 chars (past that it's a paragraph, not a headline); otherwise
+    /// falls back to a "thinking…" placeholder so the slot stays populated
+    /// while Claude generates longer responses. Returns nil when idle or
+    /// disconnected. Trailing colons are stripped because they read awkwardly
+    /// without the thing they'd introduce.
+    private var shortAssistantHeadline: String? {
+        guard state.status != .idle, state.status != .disconnected else { return nil }
+        guard var text = monitor.latestAssistantText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        if text.count > 64 { return statusLabel(state.status) }
+        while text.hasSuffix(":") { text.removeLast() }
+        return text.isEmpty ? nil : text
+    }
+
+    @ViewBuilder
+    private func assistantHeadline(text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .regular))
+            .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            .italic()
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 
     private func contextSection(_ ctx: ContextUsage) -> some View {
@@ -640,11 +676,12 @@ struct SidebarView: View {
         }
     }
 
-    private func documentsSection<S: Sequence>(_ docs: S, compact: Bool = false) -> some View where S.Element == String {
-        VStack(alignment: .leading, spacing: compact ? 3 : 6) {
+    private func documentsSection<S: Sequence>(_ docs: S, fullCount: Int) -> some View where S.Element == String {
+        let paths = Array(docs)
+        return VStack(alignment: .leading, spacing: 4) {
             sectionHeader("Documents")
-            ForEach(Array(docs), id: \.self) { path in
-                documentCard(path: path, compact: compact)
+            ForEach(Array(paths.enumerated()), id: \.element) { index, path in
+                documentCard(path: path, compact: index >= fullCount)
             }
         }
     }
@@ -869,7 +906,7 @@ struct SidebarView: View {
     private func statusLabel(_ status: SessionStatus) -> String {
         switch status {
         case .idle: return "Idle"
-        case .thinking: return "Thinking..."
+        case .thinking: return "Working"
         case .toolUse: return "Using tool"
         case .streaming: return "Streaming"
         case .disconnected: return "Disconnected"
@@ -946,11 +983,13 @@ struct SidebarView: View {
     private func toolDetailLabel(_ tool: String, detail: String) -> String {
         switch tool {
         case "Bash":
-            return "$ \(detail)"
-        case "Read", "Write", "Edit":
-            let filename = (detail as NSString).lastPathComponent
-            let dir = ((detail as NSString).deletingLastPathComponent as NSString).lastPathComponent
-            return dir.isEmpty ? filename : "\(dir)/\(filename)"
+            return summarizeBashCommand(detail)
+        case "Read":
+            return "reading \(abbreviateFilePath(detail))"
+        case "Edit":
+            return "editing \(abbreviateFilePath(detail))"
+        case "Write":
+            return abbreviateFilePath(detail)
         case "Grep":
             return detail
         case "Glob":
@@ -1030,29 +1069,104 @@ private struct SpinningIcon: View {
     }
 }
 
+/// Condense a shell command to just the command names that would run, keeping
+/// the top-level chain operators (`&&`, `||`, `;`). Examples:
+///   `gcc -O2 foo.c -o foo` → `gcc`
+///   `echo hi && date && uptime && ls -la /x | head -5` → `echo && date && uptime && ls`
+///   `bash -c 'make test && git push'` → `make && git push`
+/// Left-hand side of a pipe only; env assignments (`FOO=bar cmd`) stripped.
+/// Falls back to the original string if parsing produces nothing.
+fileprivate func summarizeBashCommand(_ command: String) -> String {
+    let unwrapped = unwrapShellDashC(command) ?? command
+    let parts = splitBashTopLevel(unwrapped)
+    if parts.isEmpty { return command }
+    var out = ""
+    for (i, part) in parts.enumerated() {
+        if i > 0 { out += " \(part.separator) " }
+        out += part.name
+    }
+    return out.isEmpty ? command : out
+}
+
+fileprivate func splitBashTopLevel(_ s: String) -> [(separator: String, name: String)] {
+    var result: [(String, String)] = []
+    var buffer = ""
+    var sep = ""
+    var quote: Character? = nil
+    var paren = 0
+    let chars = Array(s)
+    var i = 0
+
+    func flush() {
+        let name = firstBashCommandToken(buffer)
+        if !name.isEmpty { result.append((sep, name)) }
+        buffer = ""
+    }
+
+    while i < chars.count {
+        let c = chars[i]
+        if let q = quote {
+            buffer.append(c)
+            if c == q { quote = nil }
+            i += 1; continue
+        }
+        if c == "'" || c == "\"" { quote = c; buffer.append(c); i += 1; continue }
+        if c == "(" { paren += 1; buffer.append(c); i += 1; continue }
+        if c == ")" { if paren > 0 { paren -= 1 }; buffer.append(c); i += 1; continue }
+        if paren == 0 {
+            if c == ";" { flush(); sep = ";"; i += 1; continue }
+            if (c == "&" || c == "|") && i + 1 < chars.count && chars[i + 1] == c {
+                flush(); sep = "\(c)\(c)"; i += 2; continue
+            }
+        }
+        buffer.append(c)
+        i += 1
+    }
+    flush()
+    return result
+}
+
+fileprivate func firstBashCommandToken(_ segment: String) -> String {
+    var s = segment.trimmingCharacters(in: .whitespaces)
+    // Strip leading env assignments: FOO=bar.
+    while let m = s.range(of: #"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+"#, options: .regularExpression) {
+        s = String(s[m.upperBound...])
+    }
+    // Keep only the left side of a pipe chain.
+    if let pipe = s.firstIndex(of: "|") {
+        s = String(s[..<pipe]).trimmingCharacters(in: .whitespaces)
+    }
+    return s.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
+}
+
+fileprivate func unwrapShellDashC(_ s: String) -> String? {
+    let prefixes = ["bash -c ", "sh -c ", "zsh -c ", "/bin/bash -c ", "/bin/sh -c "]
+    for p in prefixes where s.hasPrefix(p) {
+        var body = String(s.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+        if let quote = body.first, quote == "'" || quote == "\"" {
+            body = String(body.dropFirst())
+            if let end = body.lastIndex(of: quote) {
+                body = String(body[..<end])
+            }
+        }
+        return body
+    }
+    return nil
+}
+
 private struct ToolDetailText: View {
     let label: String
     let rawDetail: String
+    var color: Color = .primary
 
     var body: some View {
-        if rawDetail.hasPrefix("/"), FileManager.default.fileExists(atPath: rawDetail) {
-            Text(label)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.blue)
-                .underline()
-                .lineLimit(4)
-                .truncationMode(.middle)
-                .onTapGesture {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: rawDetail))
-                }
-                .help(rawDetail)
-        } else {
-            Text(label)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                .lineLimit(4)
-                .truncationMode(.middle)
-        }
+        let isFilePath = rawDetail.hasPrefix("/") && FileManager.default.fileExists(atPath: rawDetail)
+        Text(label)
+            .font(.system(size: 14))
+            .foregroundColor(isFilePath ? .primary : color)
+            .lineLimit(4)
+            .truncationMode(.middle)
+            .help(rawDetail)
     }
 }
 

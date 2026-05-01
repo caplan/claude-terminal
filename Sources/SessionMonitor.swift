@@ -4,6 +4,7 @@ import UserNotifications
 
 final class SessionMonitor: ObservableObject {
     @Published var state: SessionState = .empty
+    @Published var latestAssistantText: String?
 
     let sessionId: UUID
     private let statusFilePath: String
@@ -16,6 +17,15 @@ final class SessionMonitor: ObservableObject {
     private var retryTimer: DispatchSourceTimer?
     private var pollTimer: DispatchSourceTimer?
     private let watchQueue = DispatchQueue(label: "org.claire.claude-terminal.session-monitor", qos: .utility)
+
+    private lazy var transcriptTailer: TranscriptTailer = {
+        TranscriptTailer { [weak self] text in
+            DispatchQueue.main.async {
+                self?.latestAssistantText = text.isEmpty ? nil : text
+            }
+        }
+    }()
+    private var watchedTranscriptPath: String?
 
     init(sessionId: UUID, initialName: String? = nil, workingDirectory: String? = nil) {
         self.sessionId = sessionId
@@ -138,6 +148,8 @@ final class SessionMonitor: ObservableObject {
             close(fileDescriptor)
             fileDescriptor = -1
         }
+        transcriptTailer.stop()
+        watchedTranscriptPath = nil
     }
 
     private func startPollTimer() {
@@ -294,8 +306,25 @@ final class SessionMonitor: ObservableObject {
                 if decoded.needsInput == true && !wasNeeding {
                     self.sendNeedsInputNotification()
                 }
+                self.syncTranscriptTailer()
             }
         }
+    }
+
+    /// Start (or re-point) the transcript watcher whenever the (workingDir,
+    /// claudeCodeSessionId) pair is known. Claude Code stores transcripts at
+    /// `~/.claude/projects/<dir-with-slashes-to-dashes>/<cc-session>.jsonl`.
+    private func syncTranscriptTailer() {
+        guard !isMock else { return }
+        guard let dir = state.workingDirectory ?? workingDirectory,
+              let ccId = state.claudeCodeSessionId,
+              !ccId.isEmpty else { return }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let sanitized = dir.replacingOccurrences(of: "/", with: "-")
+        let path = "\(home)/.claude/projects/\(sanitized)/\(ccId).jsonl"
+        guard watchedTranscriptPath != path else { return }
+        watchedTranscriptPath = path
+        transcriptTailer.watch(path: path)
     }
 
     func addDocument(path: String) {

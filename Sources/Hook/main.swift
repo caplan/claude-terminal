@@ -95,7 +95,7 @@ func toolDetail(toolName: String, input: Any?) -> String? {
     guard let dict = input as? [String: Any] else { return nil }
     switch toolName {
     case "Bash":
-        if let cmd = dict["command"] as? String, !cmd.isEmpty { return String(cmd.prefix(120)) }
+        if let cmd = dict["command"] as? String, !cmd.isEmpty { return String(cmd.prefix(500)) }
     case "Read", "Write", "Edit":
         return dict["file_path"] as? String
     case "Grep":
