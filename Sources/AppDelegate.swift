@@ -684,11 +684,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func findInDoc() {
-        guard let (_, window) = resolveFrontWindow() else { return }
-        // Yield first-responder from the Ghostty terminal so the find bar's
-        // TextField can actually receive focus when SwiftUI mounts it.
-        window.makeFirstResponder(window.contentView)
-        frontTabState()?.triggerFind()
+        guard let (windowId, window) = resolveFrontWindow() else { return }
+        // If a markdown doc is visible, route Cmd+F to the doc find bar.
+        // Otherwise drive the Ghostty terminal's native search (start_search
+        // creates the SearchState, which mounts SurfaceSearchOverlay and
+        // pipes keystrokes back into the Ghostty runtime via search:<needle>).
+        if let tabState = documentTabStates[windowId], tabState.active != nil {
+            window.makeFirstResponder(window.contentView)
+            tabState.triggerFind()
+            return
+        }
+        let frontSurface = TerminalSurfaceRegistry.shared.allSurfaces()
+            .first { $0.hostedView.window === window }
+        _ = frontSurface?.performBindingAction("start_search")
     }
 
     @objc private func findNextInDoc() {

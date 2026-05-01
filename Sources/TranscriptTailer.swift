@@ -148,15 +148,32 @@ final class TranscriptTailer {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         let type = obj["type"] as? String
         if type == "user" {
-            // A new user prompt resets the "latest assistant text" so we don't
-            // keep showing the last turn's prose through the next turn.
-            onText("")
+            // Claude Code logs tool_result entries as type:"user" with a
+            // tool_result content block. Those happen between assistant
+            // messages mid-turn — clearing on them would wipe the sidebar
+            // headline every tool call. A real user prompt carries a
+            // `promptId` and a plain-text / string content, so gate on that.
+            if Self.isUserPrompt(obj) {
+                onText("")
+            }
             return
         }
         guard type == "assistant" else { return }
         if let text = Self.extractAssistantText(obj), !text.isEmpty {
             onText(text)
         }
+    }
+
+    private static func isUserPrompt(_ obj: [String: Any]) -> Bool {
+        guard let message = obj["message"] as? [String: Any] else { return false }
+        // String-form content → always a prompt.
+        if message["content"] is String { return true }
+        // Array-form content: prompt iff no block is a tool_result.
+        if let content = message["content"] as? [[String: Any]] {
+            let hasToolResult = content.contains { ($0["type"] as? String) == "tool_result" }
+            return !hasToolResult
+        }
+        return false
     }
 
     private static func extractAssistantText(_ obj: [String: Any]) -> String? {

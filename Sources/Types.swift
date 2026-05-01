@@ -177,7 +177,7 @@ final class TerminalImageTransferOperation: @unchecked Sendable {
     func throwIfCancelled() throws {}
 }
 
-// MARK: - Search Overlay (stub)
+// MARK: - Search Overlay
 
 struct SurfaceSearchOverlay: View {
     let tabId: UUID
@@ -188,7 +188,80 @@ struct SurfaceSearchOverlay: View {
     let onNavigateSearch: (_ action: String) -> Void
     let onFieldDidFocus: () -> Void
     let onClose: () -> Void
-    var body: some View { EmptyView() }
+
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("Find", text: $searchState.needle)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 200)
+                .focused($fieldFocused)
+                .onSubmit {
+                    onNavigateSearch(NSEvent.modifierFlags.contains(.shift)
+                        ? "navigate_search:previous"
+                        : "navigate_search:next")
+                }
+                .onChange(of: fieldFocused) { focused in
+                    if focused { onFieldDidFocus() }
+                }
+                .onAppear {
+                    // The overlay is added to the view hierarchy the same tick
+                    // the state changes, so yield a runloop before asking for
+                    // focus; otherwise @FocusState is set before NSHostingView
+                    // has resolved its text field. canApplyFocusRequest's guard
+                    // relies on workspace focus tracking that this app stubs
+                    // out, so we ignore it and trust the field is safe to focus
+                    // whenever the overlay just mounted.
+                    DispatchQueue.main.async { fieldFocused = true }
+                }
+
+            if let total = searchState.total, total > 0 {
+                let current = searchState.selected.map { Int($0 + 1) } ?? 0
+                Text("\(current) of \(total)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            } else if !searchState.needle.isEmpty, (searchState.total ?? 0) == 0 {
+                Text("no matches")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+            }
+
+            Button { onNavigateSearch("navigate_search:previous") } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .disabled(searchState.needle.isEmpty)
+
+            Button { onNavigateSearch("navigate_search:next") } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .disabled(searchState.needle.isEmpty)
+
+            Button { onClose() } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .shadow(color: Color.black.opacity(0.25), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+        )
+        .fixedSize()
+        .padding(.top, 8)
+        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .allowsHitTesting(true)
+    }
 }
 
 // MARK: - TerminalPanel (stub)

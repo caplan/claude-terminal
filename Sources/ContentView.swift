@@ -66,7 +66,8 @@ struct ContentView: View {
                         terminalSurface: terminalSurface,
                         paneId: UUID(),
                         isActive: activeDocTab == nil,
-                        isVisibleInUI: activeDocTab == nil
+                        isVisibleInUI: activeDocTab == nil,
+                        searchState: terminalSurface.searchState
                     )
                     .opacity(activeDocTab == nil ? 1 : 0)
                     .allowsHitTesting(activeDocTab == nil)

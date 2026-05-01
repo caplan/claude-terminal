@@ -7,6 +7,11 @@ struct SidebarView: View {
     var width: CGFloat = 280
 
     @State private var isDropTargeted = false
+    /// Timestamp of the most recent idle transition. Used to keep the
+    /// assistant headline visible for ~10 seconds after the session quiets
+    /// down, so the user can glance up from the terminal and still see what
+    /// Claude last said.
+    @State private var idleAt: Date?
 
     private var state: SessionState { monitor.state }
 
@@ -82,6 +87,22 @@ struct SidebarView: View {
         )
         .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDropProviders(providers)
+        }
+        .onChange(of: state.status) { newStatus in
+            if newStatus == .idle {
+                let now = Date()
+                idleAt = now
+                // Fire-and-forget: clear the idle timestamp 10s later so the
+                // headline disappears. The snapshot guard keeps a stale timer
+                // from clobbering a fresher idle (e.g. user reactivates within
+                // the window and then goes idle again).
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(10))
+                    if idleAt == now { idleAt = nil }
+                }
+            } else {
+                idleAt = nil
+            }
         }
     }
 
@@ -323,16 +344,21 @@ struct SidebarView: View {
 
     /// A short one-liner shown above the tool cards whenever the session is
     /// actively working. Uses the assistant's most recent prose if it's
-    /// ≤64 chars (past that it's a paragraph, not a headline); otherwise
-    /// falls back to a "thinking…" placeholder so the slot stays populated
-    /// while Claude generates longer responses. Returns nil when idle or
-    /// disconnected. Trailing colons are stripped because they read awkwardly
-    /// without the thing they'd introduce.
+    /// ≤80 chars (past that it's a paragraph, not a headline); otherwise
+    /// falls back to the regular status label so the slot stays populated
+    /// while Claude generates longer responses. When the session just went
+    /// idle we keep a qualifying text visible for 10 seconds (via `idleAt`)
+    /// so the user has time to glance up from the terminal before it clears.
+    /// Trailing colons are stripped because they read awkwardly without the
+    /// thing they'd introduce.
     private var shortAssistantHeadline: String? {
-        guard state.status != .idle, state.status != .disconnected else { return nil }
+        let isActive = state.status != .idle && state.status != .disconnected
+        let withinIdleGrace = !isActive
+            && (idleAt.map { Date().timeIntervalSince($0) < 10 } ?? false)
+        guard isActive || withinIdleGrace else { return nil }
         guard var text = monitor.latestAssistantText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
-        if text.count > 64 { return statusLabel(state.status) }
+        if text.count > 80 { return isActive ? statusLabel(state.status) : nil }
         while text.hasSuffix(":") { text.removeLast() }
         return text.isEmpty ? nil : text
     }
@@ -1014,10 +1040,9 @@ struct SidebarView: View {
 
     private func toolColor(_ tool: String) -> Color {
         switch tool {
-        case "Bash": return .orange
-        case "Read": return Color(nsColor: .systemTeal)
-        case "Edit", "Write": return .pink
-        case "Grep", "Glob": return .purple
+        // File / shell / search tools share the same orange treatment so the
+        // user's eye doesn't have to juggle a palette for common operations.
+        case "Bash", "Read", "Edit", "Write", "Grep", "Glob": return .orange
         case "Agent": return Color(nsColor: NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor.systemYellow
@@ -1160,10 +1185,9 @@ private struct ToolDetailText: View {
     var color: Color = .primary
 
     var body: some View {
-        let isFilePath = rawDetail.hasPrefix("/") && FileManager.default.fileExists(atPath: rawDetail)
         Text(label)
             .font(.system(size: 14))
-            .foregroundColor(isFilePath ? .primary : color)
+            .foregroundColor(color)
             .lineLimit(4)
             .truncationMode(.middle)
             .help(rawDetail)
