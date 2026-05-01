@@ -27,8 +27,13 @@ struct SidebarView: View {
                 // SessionMonitor.readAndDecode; trust it here to avoid stat
                 // syscalls on every SwiftUI redraw.
                 if let docs = state.documents, !docs.isEmpty {
+                    let compact = shouldCompactDocs(
+                        docsCount: docs.count,
+                        availableHeight: geo.size.height - 32,
+                        collapse: collapse
+                    )
                     ScrollView(.vertical, showsIndicators: false) {
-                        sectionCard { documentsSection(docs.reversed()) }
+                        sectionCard { documentsSection(docs.reversed(), compact: compact) }
                     }
                     .frame(maxHeight: .infinity)
                 } else {
@@ -96,6 +101,34 @@ struct SidebarView: View {
             }
         }
         return accepted
+    }
+
+    /// Returns true when the full-size doc cards (name + title + 2-line excerpt)
+    /// would overflow the docs viewport and force scrolling. Switching to the
+    /// compact variant (filename-only row) usually fits 2-3× more rows before
+    /// the ScrollView has to kick in.
+    private func shouldCompactDocs(docsCount: Int, availableHeight: CGFloat, collapse: Int) -> Bool {
+        // Fixed height above the docs area (padding + header + status + any
+        // subagents/tasks cards). Mirrors the constants in collapseLevel.
+        var aboveDocs: CGFloat = 90 + 12 + 94
+        if !state.subagents.isEmpty {
+            aboveDocs += 12 + CGFloat(32 + state.subagents.count * 52) + 24
+        }
+        if state.tasks.contains(where: { $0.status != "completed" }) {
+            aboveDocs += 12 + CGFloat(32 + state.tasks.count * 32) + 24
+        }
+
+        // Fixed height below the docs area at the current collapse level.
+        let netH: CGFloat = state.network?.hasData == true ? 12 + (collapse >= 1 ? 44 : 80) : 0
+        let ctxH: CGFloat = state.contextUsage != nil ? 12 + (collapse >= 3 ? 44 : 144) : 0
+        let costH: CGFloat = state.cost != nil ? 12 + (collapse >= 2 ? 44 : 124) : 0
+        let belowDocs = netH + ctxH + costH
+
+        let docsViewport = max(0, availableHeight - aboveDocs - belowDocs)
+        // Full doc card including inter-card spacing is ~78pt; section header
+        // + sectionCard padding adds ~56pt.
+        let fullDocsHeight = 56 + CGFloat(docsCount) * 78
+        return fullDocsHeight > docsViewport
     }
 
     private func collapseLevel(availableHeight: CGFloat) -> Int {
@@ -607,17 +640,17 @@ struct SidebarView: View {
         }
     }
 
-    private func documentsSection<S: Sequence>(_ docs: S) -> some View where S.Element == String {
-        VStack(alignment: .leading, spacing: 6) {
+    private func documentsSection<S: Sequence>(_ docs: S, compact: Bool = false) -> some View where S.Element == String {
+        VStack(alignment: .leading, spacing: compact ? 3 : 6) {
             sectionHeader("Documents")
             ForEach(Array(docs), id: \.self) { path in
-                documentCard(path: path)
+                documentCard(path: path, compact: compact)
             }
         }
     }
 
-    private func documentCard(path: String) -> some View {
-        let meta = DocumentExcerptCache.excerpt(for: path)
+    private func documentCard(path: String, compact: Bool = false) -> some View {
+        let meta = compact ? nil : DocumentExcerptCache.excerpt(for: path)
         let isMarkdown = path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown")
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
@@ -630,7 +663,7 @@ struct SidebarView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            if !meta.title.isEmpty || !meta.excerpt.isEmpty {
+            if let meta, !meta.title.isEmpty || !meta.excerpt.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     if !meta.title.isEmpty {
                         Text(meta.title)
@@ -648,7 +681,7 @@ struct SidebarView: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, compact ? 3 : 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 5)
