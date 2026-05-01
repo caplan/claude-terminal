@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         AppearanceMode.current().apply()
         HookInstaller.installIfNeeded()
+        Self.pruneStaleFiles()
         let notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         PreferencesView.writeNotificationFlag(notificationsEnabled)
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -1047,10 +1048,46 @@ extension AppDelegate: NSMenuDelegate {
     }
 }
 
+extension AppDelegate {
+    /// Called once at launch. No windows exist yet, so every session dir is
+    /// orphaned from a previous run (normal quit leaves them behind). Also
+    /// drops docs-by-dir entries whose working directory no longer exists.
+    static func pruneStaleFiles() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let sessionsDir = "\(home)/.claude-terminal/sessions"
+        let fm = FileManager.default
+        if let entries = try? fm.contentsOfDirectory(atPath: sessionsDir) {
+            for name in entries {
+                try? fm.removeItem(atPath: "\(sessionsDir)/\(name)")
+            }
+        }
+        let docsPath = "\(home)/.claude-terminal/docs-by-dir.json"
+        if let data = fm.contents(atPath: docsPath),
+           let map = try? JSONSerialization.jsonObject(with: data) as? [String: [String]] {
+            let cleaned = map.filter { dir, _ in fm.fileExists(atPath: dir) }
+                             .mapValues { paths in paths.filter { fm.fileExists(atPath: $0) } }
+                             .filter { !$0.value.isEmpty }
+            if cleaned.count != map.count {
+                if let out = try? JSONSerialization.data(withJSONObject: cleaned, options: [.sortedKeys]) {
+                    try? out.write(to: URL(fileURLWithPath: docsPath), options: .atomic)
+                }
+            }
+        }
+    }
+}
+
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow else { return }
         if let windowId = windows.first(where: { $0.value === closingWindow })?.key {
+            // Clean up this window's session dir — it's keyed by a per-window
+            // UUID and has no reason to persist across closes.
+            if let monitor = sessionMonitors[windowId] {
+                monitor.stopMonitoring()
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                let sessionDir = "\(home)/.claude-terminal/sessions/\(monitor.sessionId.uuidString)"
+                try? FileManager.default.removeItem(atPath: sessionDir)
+            }
             sidebarStates.removeValue(forKey: windowId)
             sessionMonitors.removeValue(forKey: windowId)
             documentTabStates.removeValue(forKey: windowId)
