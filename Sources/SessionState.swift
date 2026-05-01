@@ -97,6 +97,7 @@ struct SessionState: Codable, Equatable {
     var activeTools: [ActiveTool]?
     var conversationTurns: Int?
     var needsInput: Bool?
+    var permissionMode: String?
     var apiSendMs: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -104,6 +105,7 @@ struct SessionState: Codable, Equatable {
         case status, contextUsage, cost, claudeCodeSessionId
         case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput
+        case permissionMode
         case apiSendMs = "_apiSendMs"
     }
 

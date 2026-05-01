@@ -160,6 +160,13 @@ func runHook() {
 
     var state = readState()
 
+    // Every hook event carries the current permission_mode
+    // ("default" | "plan" | "acceptEdits" | "bypassPermissions" | ...).
+    // Capture it so the sidebar can surface plan / YOLO mode.
+    if let mode = event["permission_mode"] as? String, !mode.isEmpty {
+        state["permissionMode"] = mode
+    }
+
     switch hookEvent {
     case "SessionStart":
         state["status"] = "idle"

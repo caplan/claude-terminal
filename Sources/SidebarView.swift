@@ -186,9 +186,22 @@ struct SidebarView: View {
                 }
             }
             if let model = state.modelName {
-                Text(model)
-                    .font(.system(size: 13))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                HStack(spacing: 6) {
+                    Text(model)
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    if let badge = permissionBadge(state.permissionMode) {
+                        Text(badge.label)
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(badge.color)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(badge.color, lineWidth: 1)
+                            )
+                    }
+                }
             }
             if let turns = state.conversationTurns {
                 Text("\(turns) turns")
@@ -771,6 +784,14 @@ struct SidebarView: View {
             return "~" + path.dropFirst(home.count)
         }
         return path
+    }
+
+    private func permissionBadge(_ mode: String?) -> (label: String, color: Color)? {
+        switch mode {
+        case "bypassPermissions": return ("YOLO", .red)
+        case "plan": return ("PLAN", .blue)
+        default: return nil
+        }
     }
 
     private var statusHeader: some View {
