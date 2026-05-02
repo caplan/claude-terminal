@@ -400,13 +400,32 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func assistantHeadlineCard(text: String) -> some View {
-        Text(text)
+        renderInlineMarkdown(text)
             .font(.system(size: 12, weight: .regular))
             .foregroundColor(Color(nsColor: .secondaryLabelColor))
-            .italic()
             .lineLimit(3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
+    }
+
+    /// Parses inline markdown so `**bold**` and `*italic*` render with the
+    /// expected styling and `` `code` ``/links collapse to plain text — the
+    /// raw asterisks/backticks would otherwise show literally in the prose.
+    /// Leading block markers (`# `, `> `, list bullets) are stripped first
+    /// since the headline is a single line, not a document.
+    private func renderInlineMarkdown(_ text: String) -> Text {
+        let stripped = text.replacingOccurrences(
+            of: #"^\s*(#{1,6}\s+|>\s+|[-*+]\s+|\d+\.\s+)"#,
+            with: "",
+            options: .regularExpression
+        )
+        if let attr = try? AttributedString(
+            markdown: stripped,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            return Text(attr)
+        }
+        return Text(stripped)
     }
 
     private func contextSection(_ ctx: ContextUsage) -> some View {
