@@ -926,11 +926,7 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, compact ? 3 : 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.15))
-        )
-        .contentShape(Rectangle())
+        .modifier(DocumentCardHoverModifier())
         .help(path)
         .onTapGesture {
             if isMarkdown || isImage {
@@ -1383,6 +1379,39 @@ private struct ToolDetailText: View {
             .lineLimit(4)
             .truncationMode(.middle)
             .help(rawDetail)
+    }
+}
+
+/// Hover affordance for document cards — swaps the cursor from the i-beam
+/// (caused by the sidebar-wide `.textSelection(.enabled)`) to a pointing
+/// hand, and lifts the card with a brighter background + subtle drop
+/// shadow so it visibly reads as clickable.
+private struct DocumentCardHoverModifier: ViewModifier {
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color(nsColor: .quaternaryLabelColor)
+                        .opacity(hovered ? 0.30 : 0.15))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color(nsColor: .separatorColor),
+                            lineWidth: hovered ? 0.5 : 0)
+            )
+            .shadow(color: Color.black.opacity(hovered ? 0.18 : 0),
+                    radius: hovered ? 4 : 0, x: 0, y: hovered ? 1 : 0)
+            .contentShape(Rectangle())
+            .onHover { isHovered in
+                hovered = isHovered
+                if isHovered {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
     }
 }
 
