@@ -1,8 +1,39 @@
 import Foundation
 
-/// Watches a Claude Code transcript JSONL file and emits the text content of
-/// the most recent `{"type":"assistant"}` entry. Uses DispatchSource to react
-/// to file writes, seeking only the new bytes since the last read.
+/// Snapshot of derived state from the Claude Code transcript JSONL. The tailer
+/// rebuilds this on every meaningful line so SwiftUI can render the sidebar
+/// without re-parsing the file itself.
+struct TranscriptSnapshot: Equatable {
+    /// Most recent assistant text (latched until the next user prompt).
+    var latestText: String?
+    /// Last few assistant text blocks within the current turn, oldest first.
+    /// Cleared when the user submits a new prompt.
+    var recentTexts: [String]
+    /// Wall-clock duration of the most recently completed turn.
+    var lastTurnDurationMs: Int?
+    /// Tool-call count of the most recently completed turn.
+    var lastTurnToolCount: Int?
+    /// Tool errors of the most recently completed turn.
+    var lastTurnErrorCount: Int?
+    /// Tool errors observed so far in the still-running turn.
+    var currentTurnErrorCount: Int
+    /// When the current user prompt was submitted, for live elapsed display.
+    var currentTurnStart: Date?
+
+    static let empty = TranscriptSnapshot(
+        latestText: nil,
+        recentTexts: [],
+        lastTurnDurationMs: nil,
+        lastTurnToolCount: nil,
+        lastTurnErrorCount: nil,
+        currentTurnErrorCount: 0,
+        currentTurnStart: nil
+    )
+}
+
+/// Watches a Claude Code transcript JSONL file and emits a `TranscriptSnapshot`
+/// whenever a meaningful entry is appended. Uses DispatchSource to react to
+/// file writes, seeking only the new bytes since the last read.
 final class TranscriptTailer {
     private let queue = DispatchQueue(label: "org.claire.claude-terminal.transcript", qos: .utility)
     private var fd: Int32 = -1
@@ -11,10 +42,14 @@ final class TranscriptTailer {
     private var offset: UInt64 = 0
     private var lineBuffer = Data()
     private var currentPath: String?
-    private let onText: (String) -> Void
+    private let onSnapshot: (TranscriptSnapshot) -> Void
 
-    init(onText: @escaping (String) -> Void) {
-        self.onText = onText
+    private var snapshot = TranscriptSnapshot.empty
+    private var currentTurnTools = 0
+    private static let recentTextLimit = 3
+
+    init(onSnapshot: @escaping (TranscriptSnapshot) -> Void) {
+        self.onSnapshot = onSnapshot
     }
 
     deinit {
@@ -28,6 +63,8 @@ final class TranscriptTailer {
             guard self.currentPath != path else { return }
             self.cleanup()
             self.currentPath = path
+            self.snapshot = .empty
+            self.currentTurnTools = 0
             self.open(path: path, seekToEnd: false)
         }
     }
@@ -130,9 +167,12 @@ final class TranscriptTailer {
         var start = lineBuffer.startIndex
         var lastNewline: Int? = nil
         var idx = start
+        var changed = false
         while idx < lineBuffer.endIndex {
             if lineBuffer[idx] == newline {
-                processLine(lineBuffer.subdata(in: start..<idx))
+                if processLine(lineBuffer.subdata(in: start..<idx)) {
+                    changed = true
+                }
                 lastNewline = idx
                 start = lineBuffer.index(after: idx)
             }
@@ -141,55 +181,115 @@ final class TranscriptTailer {
         if let lastNewline {
             lineBuffer = lineBuffer.subdata(in: lineBuffer.index(after: lastNewline)..<lineBuffer.endIndex)
         }
+        if changed {
+            let snap = snapshot
+            DispatchQueue.main.async { [onSnapshot] in onSnapshot(snap) }
+        }
     }
 
-    private func processLine(_ data: Data) {
-        guard !data.isEmpty else { return }
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+    /// Returns true if the snapshot changed in any way and consumers should be
+    /// re-notified.
+    private func processLine(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return false }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         let type = obj["type"] as? String
+
         if type == "user" {
-            // Claude Code logs tool_result entries as type:"user" with a
-            // tool_result content block. Those happen between assistant
-            // messages mid-turn — clearing on them would wipe the sidebar
-            // headline every tool call. A real user prompt carries a
-            // `promptId` and a plain-text / string content, so gate on that.
+            // Distinguish a real prompt (string content or content sans
+            // tool_result blocks) from a tool_result entry. tool_results
+            // happen mid-turn and shouldn't reset the assistant trace.
             if Self.isUserPrompt(obj) {
-                onText("")
+                resetTurn()
+                return true
             }
-            return
+            // Tool result: count errors toward the live turn so the chip
+            // ribbon can show them.
+            if let message = obj["message"] as? [String: Any],
+               let content = message["content"] as? [[String: Any]] {
+                let errors = content.filter {
+                    ($0["type"] as? String) == "tool_result" && ($0["is_error"] as? Bool) == true
+                }.count
+                if errors > 0 {
+                    snapshot.currentTurnErrorCount += errors
+                    return true
+                }
+            }
+            return false
         }
-        guard type == "assistant" else { return }
-        if let text = Self.extractAssistantText(obj), !text.isEmpty {
-            onText(text)
+
+        if type == "system",
+           (obj["subtype"] as? String) == "turn_duration" {
+            let turnDur = (obj["durationMs"] as? Int)
+                ?? (obj["durationMs"] as? Double).map(Int.init)
+            snapshot.lastTurnDurationMs = turnDur
+            snapshot.lastTurnToolCount = currentTurnTools
+            snapshot.lastTurnErrorCount = snapshot.currentTurnErrorCount
+            // Turn ended; the next user prompt will reset the trace fully.
+            // Keep `latestText` and `recentTexts` so the idle-grace UI can
+            // still show the last response.
+            snapshot.currentTurnStart = nil
+            currentTurnTools = 0
+            snapshot.currentTurnErrorCount = 0
+            return true
         }
+
+        guard type == "assistant",
+              let message = obj["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else {
+            return false
+        }
+
+        var changed = false
+
+        // Tool count for the live turn.
+        let toolUses = content.filter { ($0["type"] as? String) == "tool_use" }.count
+        if toolUses > 0 {
+            currentTurnTools += toolUses
+            changed = true
+        }
+
+        if let text = Self.extractTextOnly(content), !text.isEmpty {
+            snapshot.latestText = text
+            // Append unique-ish entries to the trace, dedup against the most
+            // recent one to avoid back-to-back duplicates from streaming.
+            if snapshot.recentTexts.last != text {
+                snapshot.recentTexts.append(text)
+                if snapshot.recentTexts.count > Self.recentTextLimit {
+                    snapshot.recentTexts.removeFirst(snapshot.recentTexts.count - Self.recentTextLimit)
+                }
+            }
+            changed = true
+        }
+
+        return changed
+    }
+
+    /// New user prompt: clear the assistant trace, start the live turn clock,
+    /// reset live-turn counters.
+    private func resetTurn() {
+        snapshot.latestText = nil
+        snapshot.recentTexts = []
+        snapshot.currentTurnStart = Date()
+        snapshot.currentTurnErrorCount = 0
+        currentTurnTools = 0
+    }
+
+    private static func extractTextOnly(_ content: [[String: Any]]) -> String? {
+        let texts = content.compactMap { block -> String? in
+            guard (block["type"] as? String) == "text" else { return nil }
+            return block["text"] as? String
+        }
+        let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
     }
 
     private static func isUserPrompt(_ obj: [String: Any]) -> Bool {
         guard let message = obj["message"] as? [String: Any] else { return false }
-        // String-form content → always a prompt.
         if message["content"] is String { return true }
-        // Array-form content: prompt iff no block is a tool_result.
         if let content = message["content"] as? [[String: Any]] {
             let hasToolResult = content.contains { ($0["type"] as? String) == "tool_result" }
             return !hasToolResult
         }
         return false
-    }
-
-    private static func extractAssistantText(_ obj: [String: Any]) -> String? {
-        guard let message = obj["message"] as? [String: Any] else { return nil }
-        if let content = message["content"] as? [[String: Any]] {
-            let texts = content.compactMap { block -> String? in
-                guard (block["type"] as? String) == "text" else { return nil }
-                return block["text"] as? String
-            }
-            let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            return joined.isEmpty ? nil : joined
-        }
-        if let text = message["content"] as? String {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        return nil
     }
 }

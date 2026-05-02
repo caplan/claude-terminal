@@ -99,10 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleOpenFile(url: URL) {
         let path = url.path
-        let ext = (path as NSString).pathExtension.lowercased()
-        let isMarkdown = ext == "md" || ext == "markdown" || ext == "mdown"
-
-        guard isMarkdown else {
+        guard ViewableDocument.isViewable(path) else {
             NSWorkspace.shared.open(url)
             return
         }

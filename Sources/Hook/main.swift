@@ -269,14 +269,20 @@ func runHook() {
                 state["needsInput"] = true
             }
 
-            // Track any markdown file Claude touches — Read, Write, Edit,
-            // MultiEdit, NotebookEdit, etc. Inspect the tool input for a
-            // file_path / notebook_path ending in .md.
+            // Track any viewable file Claude touches — markdown and common
+            // raster/vector image formats. The Swift sidebar renders these
+            // inline (markdown via WebKit, images via NSImage), so capturing
+            // them here makes them clickable in the Documents card.
             if let dict = toolInput as? [String: Any] {
                 let candidate = (dict["file_path"] as? String) ?? (dict["notebook_path"] as? String)
                 if let fp = candidate {
                     let lower = fp.lowercased()
-                    if (lower.hasSuffix(".md") || lower.hasSuffix(".markdown") || lower.hasSuffix(".mdown")),
+                    let viewableExtensions = [
+                        ".md", ".markdown", ".mdown",
+                        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif",
+                        ".webp", ".heic", ".heif", ".svg", ".ico", ".avif",
+                    ]
+                    if viewableExtensions.contains(where: { lower.hasSuffix($0) }),
                        !fp.contains("/memory/") {
                         var docs = (state["documents"] as? [String]) ?? []
                         if !docs.contains(fp) {

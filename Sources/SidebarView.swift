@@ -12,6 +12,10 @@ struct SidebarView: View {
     /// down, so the user can glance up from the terminal and still see what
     /// Claude last said.
     @State private var idleAt: Date?
+    /// User toggle for the Documents section. Defaults to expanded; persisted
+    /// in UserDefaults so it survives relaunches and is shared across windows
+    /// (one global preference, not per-session — matches sidebar visibility).
+    @AppStorage("documentsCollapsed") private var documentsCollapsed: Bool = false
 
     private var state: SessionState { monitor.state }
 
@@ -32,15 +36,23 @@ struct SidebarView: View {
                 // SessionMonitor.readAndDecode; trust it here to avoid stat
                 // syscalls on every SwiftUI redraw.
                 if let docs = state.documents, !docs.isEmpty {
-                    let fullCount = fullSizeDocCount(
-                        docsCount: docs.count,
-                        availableHeight: geo.size.height - 32,
-                        collapse: collapse
-                    )
-                    ScrollView(.vertical, showsIndicators: false) {
-                        sectionCard { documentsSection(docs.reversed(), fullCount: fullCount) }
+                    if documentsCollapsed {
+                        // Collapsed: just the header card with the disclosure
+                        // triangle + count. Doesn't expand to fill height, so
+                        // the bottom sections move up.
+                        sectionCard { documentsHeader(count: docs.count) }
+                        Spacer(minLength: 0)
+                    } else {
+                        let fullCount = fullSizeDocCount(
+                            docsCount: docs.count,
+                            availableHeight: geo.size.height - 32,
+                            collapse: collapse
+                        )
+                        ScrollView(.vertical, showsIndicators: false) {
+                            sectionCard { documentsSection(docs.reversed(), fullCount: fullCount) }
+                        }
+                        .frame(maxHeight: .infinity)
                     }
-                    .frame(maxHeight: .infinity)
                 } else {
                     Spacer(minLength: 0)
                 }
@@ -78,6 +90,11 @@ struct SidebarView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .background(VisualEffectBackground(material: .sidebar))
+        // Cascades to every Text inside the sidebar so prose, paths, costs,
+        // assistant headlines, etc. can be selected and copied. Buttons /
+        // tappable cards still take precedence for click handling because
+        // text selection only kicks in on drag.
+        .textSelection(.enabled)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.accentColor, lineWidth: 2)
@@ -113,8 +130,7 @@ struct SidebarView: View {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url, url.isFileURL else { return }
                 let path = url.path
-                let ext = (path as NSString).pathExtension.lowercased()
-                guard ext == "md" || ext == "markdown" || ext == "mdown" else { return }
+                guard ViewableDocument.isViewable(path) else { return }
                 DispatchQueue.main.async {
                     self.tabState.open(path: path)
                     self.monitor.addDocument(path: path)
@@ -296,7 +312,7 @@ struct SidebarView: View {
                     )
                 } else {
                     Text(toolVerb(tool).capitalized)
-                        .font(.system(size: 14))
+                        .font(.system(size: 12))
                         .foregroundColor(color)
                 }
             }
@@ -321,16 +337,12 @@ struct SidebarView: View {
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             statusHeader
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(statusColor(state.status))
-                    .frame(width: 8, height: 8)
-                Text(statusLabel(state.status))
-                    .font(.system(size: 14))
-                    .foregroundColor(.primary)
-            }
+            pulseRow
+            // The headline always renders above the tool card when it
+            // qualifies, so short prose doesn't get hidden the moment Claude
+            // fires a tool. Falls back to the now-card visual rhythm.
             if let headline = shortAssistantHeadline {
-                assistantHeadline(text: headline)
+                assistantHeadlineCard(text: headline)
             }
             if let active = state.activeTools, active.count > 1 {
                 ForEach(active) { entry in
@@ -339,7 +351,93 @@ struct SidebarView: View {
             } else if let tool = state.currentToolName {
                 toolCard(tool: tool, detail: state.toolDetail)
             }
+            if traceLines.count > 1 {
+                proseTrace(traceLines)
+            }
+            turnFooter
         }
+    }
+
+    /// Layer 1: state dot + word, plus a right-aligned chip ribbon that only
+    /// surfaces non-zero signal (errors so far, queued tasks above the count
+    /// of active ones, plan/yolo).
+    private var pulseRow: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(statusColor(state.status))
+                .frame(width: 8, height: 8)
+            Text(statusLabel(state.status))
+                .font(.system(size: 14))
+                .foregroundColor(.primary)
+            Spacer(minLength: 8)
+            chipRibbon
+        }
+    }
+
+    @ViewBuilder
+    private var chipRibbon: some View {
+        HStack(spacing: 4) {
+            if monitor.transcript.currentTurnErrorCount > 0 {
+                statusChip(
+                    label: "⚠ \(monitor.transcript.currentTurnErrorCount)",
+                    color: .red
+                )
+            }
+            // Plan/YOLO badge stays gated on the same flag as before
+            // (Claude Code only reports permission_mode at hook events,
+            // so the badge would lag behind Shift+Tab toggles).
+            if let badge = permissionBadge(state.permissionMode), false {
+                statusChip(label: badge.label, color: badge.color)
+            }
+        }
+    }
+
+    private func statusChip(label: String, color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundColor(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.15))
+            .cornerRadius(3)
+    }
+
+    /// Layer 4: when idle, summarize the most recent completed turn (duration
+    /// + tool count + error count). When active, show a live elapsed clock
+    /// and the running tool count so far.
+    @ViewBuilder
+    private var turnFooter: some View {
+        let isActive = state.status != .idle && state.status != .disconnected
+        if isActive, let start = monitor.transcript.currentTurnStart {
+            TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
+                let secs = max(0, Int(ctx.date.timeIntervalSince(start)))
+                let toolCount = (state.activeTools?.count ?? 0)
+                Text(turnFooterText(prefix: "Live  ", durSecs: secs,
+                                    tools: toolCount, errors: monitor.transcript.currentTurnErrorCount))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+            }
+        } else if let durMs = monitor.transcript.lastTurnDurationMs {
+            Text(turnFooterText(prefix: "Last  ", durSecs: durMs / 1000,
+                                tools: monitor.transcript.lastTurnToolCount ?? 0,
+                                errors: monitor.transcript.lastTurnErrorCount ?? 0))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+        }
+    }
+
+    private func turnFooterText(prefix: String, durSecs: Int, tools: Int, errors: Int) -> String {
+        var parts: [String] = ["\(prefix)\(formatTurnDuration(secs: durSecs))"]
+        if tools > 0 { parts.append("\(tools) tools") }
+        if errors > 0 { parts.append("\(errors) errors") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func formatTurnDuration(secs: Int) -> String {
+        if secs < 60 { return "\(secs)s" }
+        let m = secs / 60
+        let s = secs % 60
+        return String(format: "%dm%02ds", m, s)
     }
 
     /// A short one-liner shown above the tool cards whenever the session is
@@ -358,20 +456,67 @@ struct SidebarView: View {
         guard isActive || withinIdleGrace else { return nil }
         guard var text = monitor.latestAssistantText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
-        if text.count > 80 { return isActive ? statusLabel(state.status) : nil }
+        // No fallback when the prose is too long — the status row above
+        // already shows the same label, so duplicating it as an italic
+        // headline is just visual noise.
+        if text.count > 80 { return nil }
         while text.hasSuffix(":") { text.removeLast() }
         return text.isEmpty ? nil : text
     }
 
     @ViewBuilder
-    private func assistantHeadline(text: String) -> some View {
+    private func assistantHeadlineCard(text: String) -> some View {
         Text(text)
             .font(.system(size: 12, weight: .regular))
             .foregroundColor(Color(nsColor: .secondaryLabelColor))
             .italic()
-            .lineLimit(2)
+            .lineLimit(3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.15))
+            )
+    }
+
+    /// Layer 3: scrolling list of recent assistant text blocks (up to 3),
+    /// oldest at top with reduced opacity, newest at bottom in primary text.
+    /// Empty trace (or just one entry that already shows in the now-card)
+    /// renders nothing — the caller gates on `traceLines.count > 1`.
+    private var traceLines: [String] {
+        let lines = monitor.transcript.recentTexts
+            .map { $0.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? $0 }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return Array(lines.suffix(3))
+    }
+
+    private func proseTrace(_ lines: [String]) -> some View {
+        // Last entry is shown in the now-card — render the older ones here.
+        let older = Array(lines.dropLast())
+        return VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(older.enumerated()), id: \.offset) { index, text in
+                let opacity = older.count == 1
+                    ? 0.55
+                    : 0.35 + Double(index) / Double(max(1, older.count - 1)) * 0.25
+                Text(text)
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .opacity(opacity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.10))
+        )
     }
 
     private func contextSection(_ ctx: ContextUsage) -> some View {
@@ -705,16 +850,48 @@ struct SidebarView: View {
     private func documentsSection<S: Sequence>(_ docs: S, fullCount: Int) -> some View where S.Element == String {
         let paths = Array(docs)
         return VStack(alignment: .leading, spacing: 4) {
-            sectionHeader("Documents")
+            documentsHeader(count: paths.count)
             ForEach(Array(paths.enumerated()), id: \.element) { index, path in
                 documentCard(path: path, compact: index >= fullCount)
             }
         }
     }
 
+    /// Section header with a leading disclosure triangle. Clicking anywhere
+    /// on the header (triangle, label, or trailing count) toggles
+    /// `documentsCollapsed`, which is persisted via @AppStorage and applies
+    /// across all session windows.
+    private func documentsHeader(count: Int) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                documentsCollapsed.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    .rotationEffect(.degrees(documentsCollapsed ? 0 : 90))
+                Text("DOCUMENTS")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    .tracking(0.5)
+                Spacer()
+                if documentsCollapsed {
+                    Text("\(count)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func documentCard(path: String, compact: Bool = false) -> some View {
-        let meta = compact ? nil : DocumentExcerptCache.excerpt(for: path)
-        let isMarkdown = path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown")
+        let isImage = ViewableDocument.isImage(path)
+        let isMarkdown = ViewableDocument.isMarkdown(path)
+        let meta = (compact || isImage) ? nil : DocumentExcerptCache.excerpt(for: path)
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Image(systemName: documentIcon(path))
@@ -725,6 +902,9 @@ struct SidebarView: View {
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+            }
+            if !compact, isImage {
+                imageThumbnail(path: path)
             }
             if let meta, !meta.title.isEmpty || !meta.excerpt.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
@@ -753,7 +933,7 @@ struct SidebarView: View {
         .contentShape(Rectangle())
         .help(path)
         .onTapGesture {
-            if isMarkdown {
+            if isMarkdown || isImage {
                 tabState.open(path: path)
                 monitor.addDocument(path: path)
             } else {
@@ -761,7 +941,7 @@ struct SidebarView: View {
             }
         }
         .contextMenu {
-            if isMarkdown {
+            if isMarkdown || isImage {
                 Button("Open in Tab") {
                     tabState.open(path: path)
                     monitor.addDocument(path: path)
@@ -814,7 +994,19 @@ struct SidebarView: View {
     }
 
     private func documentIcon(_ path: String) -> String {
+        if ViewableDocument.isImage(path) { return "photo" }
         return "doc.text"
+    }
+
+    /// Loads the image off the main thread (NSImage(contentsOf:) is mostly
+    /// header-only, but full decode for big PNGs can stall). Renders inside
+    /// a fixed-height frame so doc cards don't jump as images load.
+    @ViewBuilder
+    private func imageThumbnail(path: String) -> some View {
+        ImageThumbnail(path: path)
+            .frame(maxWidth: .infinity)
+            .frame(height: 96)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
     private func taskIsBlocked(_ task: SessionTask) -> Bool {
@@ -1186,7 +1378,7 @@ private struct ToolDetailText: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 14))
+            .font(.system(size: 12))
             .foregroundColor(color)
             .lineLimit(4)
             .truncationMode(.middle)

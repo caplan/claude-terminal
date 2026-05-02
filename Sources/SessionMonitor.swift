@@ -4,7 +4,9 @@ import UserNotifications
 
 final class SessionMonitor: ObservableObject {
     @Published var state: SessionState = .empty
-    @Published var latestAssistantText: String?
+    @Published var transcript: TranscriptSnapshot = .empty
+    /// Convenience for the older callsites; mirrors `transcript.latestText`.
+    var latestAssistantText: String? { transcript.latestText }
 
     let sessionId: UUID
     private let statusFilePath: String
@@ -19,10 +21,8 @@ final class SessionMonitor: ObservableObject {
     private let watchQueue = DispatchQueue(label: "org.claire.claude-terminal.session-monitor", qos: .utility)
 
     private lazy var transcriptTailer: TranscriptTailer = {
-        TranscriptTailer { [weak self] text in
-            DispatchQueue.main.async {
-                self?.latestAssistantText = text.isEmpty ? nil : text
-            }
+        TranscriptTailer { [weak self] snap in
+            self?.transcript = snap
         }
     }()
     private var watchedTranscriptPath: String?
@@ -329,7 +329,12 @@ final class SessionMonitor: ObservableObject {
 
     func addDocument(path: String) {
         let ext = (path as NSString).pathExtension.lowercased()
-        guard ext == "md" || ext == "markdown" || ext == "mdown" else { return }
+        let allowed: Set<String> = [
+            "md", "markdown", "mdown",
+            "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
+            "webp", "heic", "heif", "svg", "ico", "avif",
+        ]
+        guard allowed.contains(ext) else { return }
         var docs = state.documents ?? []
         guard !docs.contains(path) else { return }
         docs.append(path)
