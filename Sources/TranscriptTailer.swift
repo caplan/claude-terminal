@@ -195,6 +195,16 @@ final class TranscriptTailer {
         let type = obj["type"] as? String
 
         if type == "user" {
+            // Background-task notifications are injected as user messages
+            // with an XML payload (<task-notification>...<summary>...</summary>).
+            // They aren't real user prompts — surface the summary so the
+            // sidebar reflects "Background command X completed" the same way
+            // the TUI does.
+            if let summary = Self.extractTaskNotificationSummary(obj) {
+                snapshot.latestText = summary
+                appendRecentText(summary)
+                return true
+            }
             // Distinguish a real prompt (string content or content sans
             // tool_result blocks) from a tool_result entry. tool_results
             // happen mid-turn and shouldn't reset the assistant trace.
@@ -250,14 +260,7 @@ final class TranscriptTailer {
 
         if let text = Self.extractTextOnly(content), !text.isEmpty {
             snapshot.latestText = text
-            // Append unique-ish entries to the trace, dedup against the most
-            // recent one to avoid back-to-back duplicates from streaming.
-            if snapshot.recentTexts.last != text {
-                snapshot.recentTexts.append(text)
-                if snapshot.recentTexts.count > Self.recentTextLimit {
-                    snapshot.recentTexts.removeFirst(snapshot.recentTexts.count - Self.recentTextLimit)
-                }
-            }
+            appendRecentText(text)
             changed = true
         }
 
@@ -272,6 +275,33 @@ final class TranscriptTailer {
         snapshot.currentTurnStart = Date()
         snapshot.currentTurnErrorCount = 0
         currentTurnTools = 0
+    }
+
+    /// Append to `recentTexts`, deduping against the immediately previous
+    /// entry to absorb back-to-back duplicates from streaming.
+    private func appendRecentText(_ text: String) {
+        guard snapshot.recentTexts.last != text else { return }
+        snapshot.recentTexts.append(text)
+        if snapshot.recentTexts.count > Self.recentTextLimit {
+            snapshot.recentTexts.removeFirst(snapshot.recentTexts.count - Self.recentTextLimit)
+        }
+    }
+
+    /// If the user-message payload is a `<task-notification>` XML blob,
+    /// return its `<summary>` (e.g. `Background command "X" completed (exit
+    /// code 0)`) so the sidebar can show the same thing the TUI prints when
+    /// a background task finishes.
+    private static func extractTaskNotificationSummary(_ obj: [String: Any]) -> String? {
+        guard let message = obj["message"] as? [String: Any],
+              let raw = message["content"] as? String,
+              raw.contains("<task-notification>") else { return nil }
+        guard let start = raw.range(of: "<summary>"),
+              let end = raw.range(of: "</summary>", range: start.upperBound..<raw.endIndex) else {
+            return nil
+        }
+        let summary = String(raw[start.upperBound..<end.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? nil : summary
     }
 
     private static func extractTextOnly(_ content: [[String: Any]]) -> String? {
