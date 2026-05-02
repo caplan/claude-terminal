@@ -317,30 +317,19 @@ struct SidebarView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            // Skip the corner label when the detail already conveys the tool:
-            // Bash shows the command name, Read/Edit lead with "reading"/"editing".
             if !["Bash", "Read", "Edit"].contains(tool) {
                 Text(tool)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(Color(nsColor: .tertiaryLabelColor))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.15))
-        )
     }
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             statusHeader
             pulseRow
-            // The headline always renders above the tool card when it
-            // qualifies, so short prose doesn't get hidden the moment Claude
-            // fires a tool. Falls back to the now-card visual rhythm.
             if let headline = shortAssistantHeadline {
                 assistantHeadlineCard(text: headline)
             }
@@ -351,10 +340,6 @@ struct SidebarView: View {
             } else if let tool = state.currentToolName {
                 toolCard(tool: tool, detail: state.toolDetail)
             }
-            if traceLines.count > 1 {
-                proseTrace(traceLines)
-            }
-            turnFooter
         }
     }
 
@@ -402,53 +387,6 @@ struct SidebarView: View {
             .cornerRadius(3)
     }
 
-    /// Layer 4: when idle, summarize the most recent completed turn (duration
-    /// + tool count + error count). When active, show a live elapsed clock
-    /// and the running tool count so far.
-    @ViewBuilder
-    private var turnFooter: some View {
-        let isActive = state.status != .idle && state.status != .disconnected
-        if isActive, let start = monitor.transcript.currentTurnStart {
-            TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
-                let secs = max(0, Int(ctx.date.timeIntervalSince(start)))
-                let toolCount = (state.activeTools?.count ?? 0)
-                Text(turnFooterText(prefix: "Live  ", durSecs: secs,
-                                    tools: toolCount, errors: monitor.transcript.currentTurnErrorCount))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-            }
-        } else if let durMs = monitor.transcript.lastTurnDurationMs {
-            Text(turnFooterText(prefix: "Last  ", durSecs: durMs / 1000,
-                                tools: monitor.transcript.lastTurnToolCount ?? 0,
-                                errors: monitor.transcript.lastTurnErrorCount ?? 0))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-        }
-    }
-
-    private func turnFooterText(prefix: String, durSecs: Int, tools: Int, errors: Int) -> String {
-        var parts: [String] = ["\(prefix)\(formatTurnDuration(secs: durSecs))"]
-        if tools > 0 { parts.append("\(tools) tools") }
-        if errors > 0 { parts.append("\(errors) errors") }
-        return parts.joined(separator: " · ")
-    }
-
-    private func formatTurnDuration(secs: Int) -> String {
-        if secs < 60 { return "\(secs)s" }
-        let m = secs / 60
-        let s = secs % 60
-        return String(format: "%dm%02ds", m, s)
-    }
-
-    /// A short one-liner shown above the tool cards whenever the session is
-    /// actively working. Uses the assistant's most recent prose if it's
-    /// ≤80 chars (past that it's a paragraph, not a headline); otherwise
-    /// falls back to the regular status label so the slot stays populated
-    /// while Claude generates longer responses. When the session just went
-    /// idle we keep a qualifying text visible for 10 seconds (via `idleAt`)
-    /// so the user has time to glance up from the terminal before it clears.
-    /// Trailing colons are stripped because they read awkwardly without the
-    /// thing they'd introduce.
     private var shortAssistantHeadline: String? {
         let isActive = state.status != .idle && state.status != .disconnected
         let withinIdleGrace = !isActive
@@ -456,10 +394,6 @@ struct SidebarView: View {
         guard isActive || withinIdleGrace else { return nil }
         guard var text = monitor.latestAssistantText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
-        // No fallback when the prose is too long — the status row above
-        // already shows the same label, so duplicating it as an italic
-        // headline is just visual noise.
-        if text.count > 80 { return nil }
         while text.hasSuffix(":") { text.removeLast() }
         return text.isEmpty ? nil : text
     }
@@ -473,50 +407,6 @@ struct SidebarView: View {
             .lineLimit(3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.15))
-            )
-    }
-
-    /// Layer 3: scrolling list of recent assistant text blocks (up to 3),
-    /// oldest at top with reduced opacity, newest at bottom in primary text.
-    /// Empty trace (or just one entry that already shows in the now-card)
-    /// renders nothing — the caller gates on `traceLines.count > 1`.
-    private var traceLines: [String] {
-        let lines = monitor.transcript.recentTexts
-            .map { $0.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? $0 }
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return Array(lines.suffix(3))
-    }
-
-    private func proseTrace(_ lines: [String]) -> some View {
-        // Last entry is shown in the now-card — render the older ones here.
-        let older = Array(lines.dropLast())
-        return VStack(alignment: .leading, spacing: 3) {
-            ForEach(Array(older.enumerated()), id: \.offset) { index, text in
-                let opacity = older.count == 1
-                    ? 0.55
-                    : 0.35 + Double(index) / Double(max(1, older.count - 1)) * 0.25
-                Text(text)
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .opacity(opacity)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.10))
-        )
     }
 
     private func contextSection(_ ctx: ContextUsage) -> some View {
