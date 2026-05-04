@@ -1,17 +1,85 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private extension Color {
+    init(hex: UInt32) {
+        self.init(
+            red:   Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >>  8) & 0xFF) / 255,
+            blue:  Double( hex        & 0xFF) / 255
+        )
+    }
+}
+
 struct SidebarView: View {
     @ObservedObject var monitor: SessionMonitor
     @ObservedObject var tabState: DocumentTabState
     var width: CGFloat = 280
 
     @State private var isDropTargeted = false
+    @ObservedObject private var githubStatus = GitHubStatusMonitor.shared
     /// Timestamp of the most recent idle transition. Used to keep the
     /// assistant headline visible for ~10 seconds after the session quiets
     /// down, so the user can glance up from the terminal and still see what
     /// Claude last said.
     @State private var idleAt: Date?
+    /// Per-second snapshots of session activity, powering the bidirectional
+    /// activity bar chart in the Where Time Went section. Each sample reflects
+    /// the fraction of the second spent in each bucket (0..1) plus how long
+    /// the bucket has been continuously busy at sample time — the streak
+    /// drives a blue → yellow → orange → red → dark-red color ramp so a
+    /// stuck call jumps out visually.
+    @State private var activitySamples: [ActivitySample] = []
+    /// 100ms sub-samples accumulated into the next emitted activitySample.
+    @State private var subSampleClaude: Int = 0
+    @State private var subSampleTool: Int = 0
+    @State private var subSampleCount: Int = 0
+    /// Continuous-busy duration (seconds) for each bucket. Reset to 0 the
+    /// instant the bucket goes idle.
+    @State private var claudeStreakSecs: Double = 0
+    @State private var toolStreakSecs: Double = 0
+    /// Wall-clock time of the most recent emitted sample. The chart's
+    /// TimelineView animation interpolates between samples by reading
+    /// `Date().timeIntervalSince(lastSampleTime)` and scaling it to a
+    /// horizontal slide of one bar-width per second.
+    @State private var lastSampleTime: Date = Date()
+    /// Diagnostic state for the activity logger — only writes a line on
+    /// status / claudeBusy / toolBusy transitions, not every tick.
+    @State private var loggedClaudeBusy: Bool? = nil
+    @State private var loggedToolBusy: Bool? = nil
+    @State private var loggedStatusRaw: String? = nil
+    /// Last observed cumulative tool-ms — used to detect short-lived tools
+    /// (Read/Edit/etc.) that complete between two 10Hz ticks.
+    @State private var lastObservedToolMsTotal: Int = 0
+    /// Set of tool IDs that were active on the previous tick. Any new ID
+    /// this tick means a fresh tool started, so the tool hue ramp resets.
+    @State private var prevActiveToolIds: Set<String> = []
+    /// True if a new tool began during the current 3s window — the emitted
+    /// sample inherits this flag and the chart adds a small left inset to
+    /// the tool rectangle, visually separating it from the prior tool run.
+    @State private var toolStartedThisWindow: Bool = false
+    /// Distinct tool names seen during the current 3s window, in first-
+    /// observed order. Rendered as a hover tooltip on the tool bar so
+    /// users can see which tools produced the activity.
+    @State private var toolNamesThisWindow: [String] = []
+    private static let activityWindow = 60
+    private static let subSampleHz: Double = 10
+    private static let barDurationSecs: Double = 3
+    private static let subSamplesPerSample = Int(subSampleHz * barDurationSecs)
+
+    private struct ActivitySample: Equatable {
+        let claude: Double          // 0..1 fraction of second
+        let tool: Double            // 0..1 fraction of second
+        let claudeStreakSecs: Double
+        let toolStreakSecs: Double
+        // True if a new tool started during this window — the renderer
+        // adds a left inset so the bar visually detaches from the prior
+        // tool's run of bars.
+        let toolIsNewToolStart: Bool
+        // Distinct tool names observed during this window, in first-seen
+        // order. Surfaced as the hover tooltip on the tool bar.
+        let toolNames: [String]
+    }
     /// User toggle for the Documents section. Defaults to expanded; persisted
     /// in UserDefaults so it survives relaunches and is shared across windows
     /// (one global preference, not per-session — matches sidebar visibility).
@@ -57,15 +125,7 @@ struct SidebarView: View {
                     Spacer(minLength: 0)
                 }
 
-                if let net = state.network, net.hasData {
-                    sectionCard {
-                        if collapse >= 1 {
-                            collapsedNetworkSection(net)
-                        } else {
-                            networkSection(net)
-                        }
-                    }
-                }
+                sectionCard { activitySection() }
                 if let context = state.contextUsage {
                     sectionCard {
                         if collapse >= 3 {
@@ -90,6 +150,9 @@ struct SidebarView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .background(VisualEffectBackground(material: .sidebar))
+        .onReceive(Timer.publish(every: 1.0 / Self.subSampleHz, on: .main, in: .common).autoconnect()) { _ in
+            tickActivitySubSample()
+        }
         // Cascades to every Text inside the sidebar so prose, paths, costs,
         // assistant headlines, etc. can be selected and copied. Buttons /
         // tappable cards still take precedence for click handling because
@@ -156,7 +219,7 @@ struct SidebarView: View {
         }
 
         // Fixed height below the docs area at the current collapse level.
-        let netH: CGFloat = state.network?.hasData == true ? 12 + (collapse >= 1 ? 44 : 80) : 0
+        let netH: CGFloat = 12 + 80
         let ctxH: CGFloat = state.contextUsage != nil ? 12 + (collapse >= 3 ? 44 : 144) : 0
         let costH: CGFloat = state.cost != nil ? 12 + (collapse >= 2 ? 44 : 124) : 0
         let belowDocs = netH + ctxH + costH
@@ -193,8 +256,8 @@ struct SidebarView: View {
             fixed += 12 + 32 + 24 + 62
         }
 
-        let netFull: CGFloat = state.network?.hasData == true ? 12 + 80 : 0
-        let netSmall: CGFloat = state.network?.hasData == true ? 12 + 44 : 0
+        let netFull: CGFloat = 12 + 80
+        let netSmall: CGFloat = 12 + 80
         let costFull: CGFloat = state.cost != nil ? 12 + 124 : 0
         let costSmall: CGFloat = state.cost != nil ? 12 + 44 : 0
         let ctxFull: CGFloat = state.contextUsage != nil ? 12 + 144 : 0
@@ -225,6 +288,46 @@ struct SidebarView: View {
         return "Session"
     }
 
+    /// Renders a small warning icon next to the working-directory line when
+    /// (a) the session cwd is inside a git repo and (b) GitHub's status
+    /// indicator is anything other than `none` / `unknown`. Clicking opens
+    /// status.github.com in the browser; hovering shows the incident
+    /// summary returned by the status API.
+    @ViewBuilder
+    private func githubStatusBadge(dir: String) -> some View {
+        let indicator = githubStatus.indicator
+        if indicator != .none, indicator != .unknown,
+           GitRepoDetector.isInGitRepo(dir) {
+            let tooltip = githubStatus.summary.isEmpty
+                ? "GitHub Status"
+                : "GitHub: \(githubStatus.summary)"
+            Button {
+                NSWorkspace.shared.open(URL(string: "https://status.github.com")!)
+            } label: {
+                Image("github")
+                    .renderingMode(.template)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+                    .foregroundColor(githubStatusColor(indicator))
+            }
+            .buttonStyle(.plain)
+            .modifier(InstantTooltip(text: tooltip))
+        }
+    }
+
+    private func githubStatusColor(_ indicator: GitHubStatusMonitor.Indicator) -> Color {
+        switch indicator {
+        case .minor:       return .yellow
+        case .major:       return .orange
+        case .critical:    return .red
+        case .maintenance: return .blue
+        case .none, .unknown:
+            return .primary
+        }
+    }
+
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -243,11 +346,14 @@ struct SidebarView: View {
                     }
             }
             if let dir = state.workingDirectory {
-                Text(abbreviatePath(dir))
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 4) {
+                    githubStatusBadge(dir: dir)
+                    Text(abbreviatePath(dir))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             if let dir = state.workingDirectory,
                let ticket = JiraTicketDetector.ticket(for: dir) {
@@ -556,19 +662,14 @@ struct SidebarView: View {
         }
     }
 
-    private func networkSection(_ net: NetworkInfo) -> some View {
+    private func activitySection() -> some View {
         let isActive = state.status == .thinking || state.status == .toolUse || state.status == .streaming
         let waitingSec = apiWaitSeconds
         let isSlow = waitingSec > 15
         let dotColor: Color = isSlow ? .orange : (isActive ? .blue : Color(nsColor: .separatorColor))
-        let apiMs = net.apiMsTotal ?? 0
-        let toolMs = net.toolMsTotal ?? 0
-        let total = apiMs + toolMs
-        let apiPct = total > 0 ? Int(round(Double(apiMs) / Double(total) * 100)) : 0
-        let toolPct = total > 0 ? 100 - apiPct : 0
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                sectionHeader("Where time went")
+                sectionHeader("Activity")
                 Spacer()
                 if isActive {
                     PulsingDot(color: dotColor)
@@ -578,48 +679,7 @@ struct SidebarView: View {
                         .frame(width: 6, height: 6)
                 }
             }
-            if isActive, waitingSec >= 5 {
-                Text("waiting \(waitingSec)s...")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(isSlow ? .orange : Color(nsColor: .secondaryLabelColor))
-            }
-            if total > 0 {
-                timeStackedBar(apiMs: apiMs, toolMs: toolMs)
-                    .frame(height: 6)
-                HStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.blue).frame(width: 6, height: 6)
-                            Text("Claude")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        }
-                        Text(formatDurationShort(apiMs) + "  \(apiPct)%")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.green).frame(width: 6, height: 6)
-                            Text("Tools")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        }
-                        Text(formatDurationShort(toolMs) + "  \(toolPct)%")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    }
-                }
-                if let last = net.lastToolMs {
-                    Text("last response \(formatLatency(last))")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color(nsColor: .quaternaryLabelColor))
-                }
-            } else if let last = net.lastToolMs {
-                Text(formatLatency(last))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(latencyColor(last))
-            }
+            activityChart()
         }
     }
 
@@ -635,6 +695,276 @@ struct SidebarView: View {
                     .fill(Color.green)
             }
             .clipShape(RoundedRectangle(cornerRadius: 2))
+        }
+    }
+
+    /// Bidirectional activity history. The horizontal mid-line is the
+    /// baseline: Claude bars grow upward from it, tool bars grow downward.
+    /// Bar height is proportional to the fraction of that second the bucket
+    /// was busy. Bar color ramps from light desaturated blue → yellow →
+    /// orange → red → dark red as the bucket's continuous-busy streak grows
+    /// past 5/15/30/60s, so a hung call is obvious at a glance.
+    private func activityChart() -> some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .trailing, spacing: 0) {
+                Text("Claude")
+                    .font(.system(size: 9))
+                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                Text("Tools")
+                    .font(.system(size: 9))
+                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
+            .frame(height: 48)
+            GeometryReader { geo in
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+                    let progress = max(0, min(1, ctx.date.timeIntervalSince(lastSampleTime) / Self.barDurationSecs))
+                    let halfH = geo.size.height / 2
+                    let columns = Self.activityWindow + 1
+                    let spacing: CGFloat = 0
+                    // Pitch = chart-visible-width / activityWindow keeps
+                    // exactly `activityWindow` bars filling the visible area
+                    // at progress=0; the +1th bar lives just past the right
+                    // edge and slides in as `progress` ramps to 1.
+                    let pitch = geo.size.width / CGFloat(Self.activityWindow)
+                    let barW = max(0, pitch - spacing)
+                    let totalW = pitch * CGFloat(columns) - spacing
+                    let offset = -pitch * CGFloat(progress)
+                    // Right-align: fill slots from the right so the newest
+                    // sample lands at slot `columns-1` (offscreen-right,
+                    // sliding into view as progress ramps to 1). Empty
+                    // slots stay on the left until the buffer fills.
+                    let firstUsedSlot = columns - activitySamples.count
+
+                    HStack(alignment: .center, spacing: spacing) {
+                        ForEach(0..<columns, id: \.self) { i in
+                            let idx = i - firstUsedSlot
+                            let s: ActivitySample = (idx >= 0 && idx < activitySamples.count)
+                                ? activitySamples[idx]
+                                : ActivitySample(claude: 0, tool: 0,
+                                                  claudeStreakSecs: 0, toolStreakSecs: 0,
+                                                  toolIsNewToolStart: false,
+                                                  toolNames: [])
+                            let toolTip = s.toolNames.joined(separator: ", ")
+                            // Any non-zero sample gets at least `minVisible`
+                            // of the half-height so very short tools (Read,
+                            // Edit, Update — often <100ms) don't render as
+                            // 1-px slivers. Preserves legibility without
+                            // misreporting magnitude for longer activity.
+                            let minVisible: Double = 0.15
+                            let claudeH = s.claude > 0 ? max(minVisible, s.claude) : 0
+                            let toolH   = s.tool   > 0 ? max(minVisible, s.tool)   : 0
+                            VStack(spacing: 0) {
+                                // Upper half — Claude bar pinned to the
+                                // CENTERLINE via ZStack alignment: .bottom.
+                                ZStack(alignment: .bottom) {
+                                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    if claudeH > 0 {
+                                        Rectangle()
+                                            .fill(Self.intensityColor(streakSecs: s.claudeStreakSecs))
+                                            .frame(height: halfH * claudeH)
+                                    }
+                                }
+                                .frame(height: halfH)
+                                // Lower half — Tool bar pinned to the
+                                // CENTERLINE via ZStack alignment: .top.
+                                // `padding(.leading)` is the 1-px inset
+                                // marker when a fresh tool begins.
+                                ZStack(alignment: .top) {
+                                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    if toolH > 0 {
+                                        Rectangle()
+                                            .fill(Self.intensityColor(streakSecs: s.toolStreakSecs))
+                                            .frame(height: halfH * toolH)
+                                            .padding(.leading, s.toolIsNewToolStart ? 1 : 0)
+                                            .help(toolTip)
+                                    }
+                                }
+                                .frame(height: halfH)
+                            }
+                            .frame(width: barW)
+                        }
+                    }
+                    .frame(width: totalW, alignment: .leading)
+                    .offset(x: offset)
+                }
+            }
+            .frame(height: 48)
+            .clipped()
+            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.10))
+            .cornerRadius(2)
+        }
+        // Single continuous divider spanning labels + chart — overlaying
+        // the outer HStack avoids the visible gap that two separate
+        // per-column overlays would leave in the middle.
+        .overlay(
+            Rectangle()
+                .fill(Color(nsColor: .secondaryLabelColor).opacity(0.7))
+                .frame(height: 1)
+        )
+    }
+
+    /// Streak duration → color ramp. The gradient peaks at 120 seconds of
+    /// continuous busy: light blue → deep blue → green → orange → red.
+    /// Stops are interpolated linearly in RGB.
+    private static let intensityStops: [(Double, UInt32)] = [
+        (0.00, 0xBFDCFF),  //   0s — light blue (idle)
+        (0.22, 0x0B3A99),  //  26s — deep blue
+        (0.48, 0x166534),  //  58s — green
+        (0.78, 0xFF8A1F),  //  94s — orange
+        (1.00, 0xDC2626),  // 120s+ — red
+    ]
+    private static let intensityMaxSecs: Double = 1800
+
+    private static let debugLogPath: String = {
+        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude-terminal")
+        return (dir as NSString).appendingPathComponent("debug.log")
+    }()
+
+    private static func debugTimestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f.string(from: Date())
+    }
+
+    private static func appendDebugLog(_ line: String) {
+        guard let data = line.data(using: .utf8) else { return }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: debugLogPath) {
+            try? fm.createDirectory(
+                atPath: (debugLogPath as NSString).deletingLastPathComponent,
+                withIntermediateDirectories: true
+            )
+            fm.createFile(atPath: debugLogPath, contents: nil)
+        }
+        if let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: debugLogPath)) {
+            defer { try? h.close() }
+            try? h.seekToEnd()
+            try? h.write(contentsOf: data)
+        }
+    }
+
+    private static func intensityColor(streakSecs: Double) -> Color {
+        let t = max(0, min(1, streakSecs / intensityMaxSecs))
+        if t >= intensityStops.last!.0 {
+            return Color(hex: intensityStops.last!.1)
+        }
+        for i in 0..<(intensityStops.count - 1) {
+            let (ta, ha) = intensityStops[i]
+            let (tb, hb) = intensityStops[i + 1]
+            if t >= ta && t < tb {
+                let f = (t - ta) / (tb - ta)
+                let ar = Double((ha >> 16) & 0xFF), ag = Double((ha >> 8) & 0xFF), ab = Double(ha & 0xFF)
+                let br = Double((hb >> 16) & 0xFF), bg = Double((hb >> 8) & 0xFF), bb = Double(hb & 0xFF)
+                return Color(
+                    red:   (ar + (br - ar) * f) / 255,
+                    green: (ag + (bg - ag) * f) / 255,
+                    blue:  (ab + (bb - ab) * f) / 255
+                )
+            }
+        }
+        return Color(hex: intensityStops.first!.1)
+    }
+
+    /// 10Hz sub-sampler. Updates streak counters and accumulates 100ms
+    /// fragments. At the 1-second boundary we emit one finalized sample —
+    /// the chart animates the horizontal slide on its own via TimelineView,
+    /// using `lastSampleTime` to interpolate the offset.
+    ///
+    /// Claude and Tool buckets are sampled independently: a sub-tick where
+    /// the API is in flight counts toward Claude even if a tool is also
+    /// running. Otherwise rapid tool chains mask the brief thinking gaps
+    /// and the chart misleadingly looks like 100% tool work.
+    private func tickActivitySubSample() {
+        // When Claude is blocked on a permission prompt the session shows
+        // status=tool_use but it isn't actually working — it's waiting on
+        // the user. Treat that as zero activity so neither bar grows.
+        let needsInput = state.needsInput == true
+        // A tool that started and finished within a single 100ms tick
+        // (very common for Read/Edit/Glob/Grep) won't be visible via the
+        // status snapshot — but the hook will have bumped toolMsTotal.
+        // Detecting a positive delta lets us still credit those samples.
+        let cumulativeToolMs = state.network?.toolMsTotal ?? 0
+        let toolJustFinished = cumulativeToolMs > lastObservedToolMsTotal
+        lastObservedToolMsTotal = cumulativeToolMs
+        let toolBusy = !needsInput
+            && (!(state.activeTools ?? []).isEmpty
+                || state.status == .toolUse
+                || toolJustFinished)
+        // Claude bar tracks only real LLM work — a tool starting ends the
+        // Claude bar immediately. Ticks where a tool is running OR just
+        // finished (caught by `toolJustFinished`) are credited to the
+        // tool bar exclusively; otherwise a short sub-100ms tool gets
+        // sampled as Claude because `status==.thinking` in the same tick.
+        let claudeBusy = !needsInput && !toolBusy
+            && (state.status == .thinking || state.status == .streaming)
+
+        // Diagnostic: log state transitions to ~/.claude-terminal/debug.log
+        // so we can verify that .thinking is actually observed between tools.
+        let statusRaw = state.status.rawValue
+        if statusRaw != loggedStatusRaw
+            || claudeBusy != loggedClaudeBusy
+            || toolBusy != loggedToolBusy {
+            let toolCount = state.activeTools?.count ?? 0
+            let line = "\(Self.debugTimestamp())  status=\(statusRaw) claudeBusy=\(claudeBusy) toolBusy=\(toolBusy) activeTools=\(toolCount)\n"
+            Self.appendDebugLog(line)
+            loggedStatusRaw = statusRaw
+            loggedClaudeBusy = claudeBusy
+            loggedToolBusy = toolBusy
+        }
+
+        if claudeBusy {
+            subSampleClaude += 1
+            claudeStreakSecs += 1.0 / Self.subSampleHz
+        } else {
+            claudeStreakSecs = 0
+        }
+        // Reset the tool hue ramp each time a fresh tool starts — the
+        // streak measures how long *this* tool has been running, not the
+        // cumulative run of back-to-back tools. Detect a new tool by any
+        // active tool ID that wasn't present on the previous tick.
+        let currentToolIds = Set((state.activeTools ?? []).map(\.id))
+        let newToolStarted = !currentToolIds.subtracting(prevActiveToolIds).isEmpty
+        prevActiveToolIds = currentToolIds
+        if newToolStarted {
+            toolStreakSecs = 0
+            toolStartedThisWindow = true
+        }
+        for t in state.activeTools ?? [] where !toolNamesThisWindow.contains(t.tool) {
+            toolNamesThisWindow.append(t.tool)
+        }
+        if toolBusy {
+            subSampleTool += 1
+            toolStreakSecs += 1.0 / Self.subSampleHz
+        } else {
+            toolStreakSecs = 0
+        }
+        subSampleCount += 1
+
+        if subSampleCount >= Self.subSamplesPerSample {
+            let denom = Double(Self.subSamplesPerSample)
+            let sample = ActivitySample(
+                claude: Double(subSampleClaude) / denom,
+                tool: Double(subSampleTool) / denom,
+                claudeStreakSecs: claudeStreakSecs,
+                toolStreakSecs: toolStreakSecs,
+                toolIsNewToolStart: toolStartedThisWindow,
+                toolNames: toolNamesThisWindow
+            )
+            // Keep one extra bar offscreen on the right so we always have
+            // something to slide into view as the HStack scrolls left.
+            activitySamples.append(sample)
+            let cap = Self.activityWindow + 1
+            if activitySamples.count > cap {
+                activitySamples.removeFirst(activitySamples.count - cap)
+            }
+            lastSampleTime = Date()
+            subSampleClaude = 0
+            subSampleTool = 0
+            subSampleCount = 0
+            toolStartedThisWindow = false
+            toolNamesThisWindow = []
         }
     }
 
@@ -793,6 +1123,7 @@ struct SidebarView: View {
                 }
             }
             .contentShape(Rectangle())
+            .textSelection(.disabled)
         }
         .buttonStyle(.plain)
     }
@@ -1295,11 +1626,57 @@ private struct ToolDetailText: View {
 /// (caused by the sidebar-wide `.textSelection(.enabled)`) to a pointing
 /// hand, and lifts the card with a brighter background + subtle drop
 /// shadow so it visibly reads as clickable.
+/// Zero-delay tooltip — the AppKit `.help()` modifier has a built-in
+/// ~1-2s delay that isn't configurable. This shows a small popover-style
+/// label as soon as the pointer enters the view, anchored below it.
+private struct InstantTooltip: ViewModifier {
+    let text: String
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovered = $0 }
+            .overlay(alignment: .topLeading) {
+                if hovered, !text.isEmpty {
+                    Text(text)
+                        .font(.system(size: 11))
+                        .foregroundColor(.primary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        // Use `textBackgroundColor` (flat opaque white /
+                        // near-black) instead of `windowBackgroundColor` —
+                        // the latter can render semi-translucently on top
+                        // of the sidebar's vibrancy material, letting
+                        // content behind the window bleed into the
+                        // tooltip as ghost text.
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color(nsColor: .textBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                        )
+                        .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
+                        .fixedSize()
+                        .offset(x: 0, y: 22)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                        .zIndex(100)
+                }
+            }
+    }
+}
+
 private struct DocumentCardHoverModifier: ViewModifier {
     @State private var hovered = false
 
     func body(content: Content) -> some View {
         content
+            // Disable text selection on the clickable card — the sidebar's
+            // root enables selection for prose, but on tap targets it
+            // steals clicks (drag-to-select beats onTapGesture once started).
+            .textSelection(.disabled)
             .background(
                 RoundedRectangle(cornerRadius: 5)
                     .fill(Color(nsColor: .quaternaryLabelColor)

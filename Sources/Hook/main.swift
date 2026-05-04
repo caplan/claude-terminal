@@ -21,6 +21,32 @@ let statusDir = "\(home)/.claude-terminal/sessions/\(sessionId)"
 let statusFile = "\(statusDir)/status.json"
 let lockFile = "\(statusDir)/.status.lock"
 let persistFile = "\(home)/.claude-terminal/cost-by-session.json"
+let hookLogFile = "\(home)/.claude-terminal/hook.log"
+
+/// Append a breadcrumb to both stderr AND ~/.claude-terminal/hook.log.
+/// Flushing to a file synced per call means the trail survives SIGKILL
+/// / SIGSEGV — useful for diagnosing "non-blocking status code, no stderr"
+/// errors where Claude Code's stderr capture is unreliable.
+func hookLog(_ message: String) {
+    let ts: String = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f.string(from: Date())
+    }()
+    let line = "\(ts) [\(sessionId.prefix(8))] \(message)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    FileHandle.standardError.write(data)
+    // O_APPEND + fsync so the line hits disk even if the process is
+    // killed immediately after this call. Single system-call append is
+    // atomic on POSIX, so concurrent hooks won't interleave.
+    let fd = open(hookLogFile, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+    guard fd >= 0 else { return }
+    _ = data.withUnsafeBytes { buf in
+        write(fd, buf.baseAddress, buf.count)
+    }
+    fsync(fd)
+    close(fd)
+}
 
 try? FileManager.default.createDirectory(atPath: statusDir, withIntermediateDirectories: true)
 
@@ -155,10 +181,30 @@ func runHook() {
           let hookEvent = event["hook_event_name"] as? String,
           !hookEvent.isEmpty else { exit(0) }
 
+    let hookStarted = Date()
+    let toolName = (event["tool_name"] as? String) ?? ""
+    let hookTag = "\(hookEvent)\(toolName.isEmpty ? "" : ":\(toolName)")"
+    // Breadcrumb at hook entry. If we ever see `enter` without the
+    // matching `done`, the hook died mid-flight (crash / timeout). Logs
+    // persist to ~/.claude-terminal/hook.log via fsync so the trail
+    // survives SIGKILL.
+    hookLog("enter \(hookTag)")
+    defer {
+        let elapsedMs = Int(Date().timeIntervalSince(hookStarted) * 1000)
+        hookLog("done  \(hookTag) \(elapsedMs)ms")
+    }
+
+    // Stage breadcrumbs — narrow down which phase is hanging when the
+    // hook times out. The last `stage` line before SIGKILL identifies
+    // the exact call site that's blocking.
+    hookLog("stage lock.acquire")
     let release = acquireLock()
+    hookLog("stage lock.acquired")
     defer { release() }
 
+    hookLog("stage state.read")
     var state = readState()
+    hookLog("stage state.loaded")
 
     // Every hook event carries the current permission_mode
     // ("default" | "plan" | "acceptEdits" | "bypassPermissions" | ...).
@@ -340,6 +386,14 @@ func runHook() {
                 state["_toolStartMs"] = startMap
             }
 
+            // Intentionally no Bash-command image-path extraction here.
+            // Three implementations (dir walk, regex, tokenize+fileExists)
+            // all hung PostToolUse:Bash in practice — the common thread is
+            // that blocking filesystem calls from a short-lived CLI
+            // process have no reliable async escape. Read/Write/Edit/
+            // NotebookEdit already surface paths via PreToolUse file_path,
+            // which covers the common cases without any scanning risk.
+
             state["_apiSendMs"] = nowMs()
         }
 
@@ -416,7 +470,9 @@ func runHook() {
         }
     }
 
+    hookLog("stage state.write")
     writeState(state)
+    hookLog("stage state.written")
 }
 
 func readHiddenAgents() -> Set<String> {
