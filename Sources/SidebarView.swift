@@ -747,14 +747,15 @@ struct SidebarView: View {
                                                   toolIsNewToolStart: false,
                                                   toolNames: [])
                             let toolTip = s.toolNames.joined(separator: ", ")
-                            // Any non-zero sample gets at least `minVisible`
-                            // of the half-height so very short tools (Read,
-                            // Edit, Update — often <100ms) don't render as
-                            // 1-px slivers. Preserves legibility without
-                            // misreporting magnitude for longer activity.
-                            let minVisible: Double = 0.15
-                            let claudeH = s.claude > 0 ? max(minVisible, s.claude) : 0
-                            let toolH   = s.tool   > 0 ? max(minVisible, s.tool)   : 0
+                            // Minimum visible height per bucket. Tools get
+                            // a much higher floor because tool events are
+                            // usually 30-60 ms blips in 3s windows, which
+                            // otherwise render as near-invisible slivers
+                            // next to full-height Claude neighbors. Claude
+                            // bars need little help since pure thinking
+                            // typically spans most of a 3s window.
+                            let claudeH = s.claude > 0 ? max(0.15, s.claude) : 0
+                            let toolH   = s.tool   > 0 ? max(0.50, s.tool)   : 0
                             VStack(spacing: 0) {
                                 // Upper half — Claude bar pinned to the
                                 // CENTERLINE via ZStack alignment: .bottom.
