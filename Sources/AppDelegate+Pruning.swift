@@ -1,20 +1,15 @@
 import Foundation
 
 extension AppDelegate {
-    /// Called once at launch. No windows exist yet, so every session dir is
-    /// orphaned from a previous run (normal quit leaves them behind). Also
-    /// drops docs-by-dir / cost-by-session entries that refer to things no
-    /// longer on disk.
+    /// Called once at launch. Session dirs persist across runs so the menubar
+    /// popover can list past sessions; we cap retention so they don't grow
+    /// without bound. Also drops docs-by-dir / cost-by-session entries that
+    /// refer to things no longer on disk.
     static func pruneStaleFiles() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let fm = FileManager.default
 
-        let sessionsDir = "\(home)/.claude-terminal/sessions"
-        if let entries = try? fm.contentsOfDirectory(atPath: sessionsDir) {
-            for name in entries {
-                try? fm.removeItem(atPath: "\(sessionsDir)/\(name)")
-            }
-        }
+        pruneSessionDirs(home: home, fm: fm)
 
         let docsPath = "\(home)/.claude-terminal/docs-by-dir.json"
         if let data = fm.contents(atPath: docsPath),
@@ -41,6 +36,37 @@ extension AppDelegate {
                 if let out = try? JSONSerialization.data(withJSONObject: cleaned, options: [.sortedKeys]) {
                     try? out.write(to: URL(fileURLWithPath: costPath), options: .atomic)
                 }
+            }
+        }
+    }
+
+    /// Retention policy for ~/.claude-terminal/sessions/<uuid>/. Keeps dirs
+    /// modified within the cutoff, capped at a max count (newest-first). Older
+    /// / excess dirs are removed. Both bounds apply — whichever fires first.
+    private static let sessionRetentionDays: TimeInterval = 30
+    private static let sessionRetentionMaxCount: Int = 100
+
+    private static func pruneSessionDirs(home: String, fm: FileManager) {
+        let sessionsDir = "\(home)/.claude-terminal/sessions"
+        guard let entries = try? fm.contentsOfDirectory(atPath: sessionsDir) else { return }
+
+        let cutoff = Date(timeIntervalSinceNow: -sessionRetentionDays * 24 * 3600)
+        // Sort by mtime descending: newest first. Anything past the max-count
+        // or older than the cutoff gets dropped.
+        let scored: [(name: String, mtime: Date)] = entries.compactMap { name in
+            let path = "\(sessionsDir)/\(name)"
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let mtime = attrs[.modificationDate] as? Date else {
+                return (name, .distantPast)
+            }
+            return (name, mtime)
+        }.sorted { $0.mtime > $1.mtime }
+
+        for (idx, entry) in scored.enumerated() {
+            let tooOld = entry.mtime < cutoff
+            let overCap = idx >= sessionRetentionMaxCount
+            if tooOld || overCap {
+                try? fm.removeItem(atPath: "\(sessionsDir)/\(entry.name)")
             }
         }
     }

@@ -4,14 +4,10 @@ extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow else { return }
         if let windowId = windows.first(where: { $0.value === closingWindow })?.key {
-            // Clean up this window's session dir — it's keyed by a per-window
-            // UUID and has no reason to persist across closes.
-            if let monitor = sessionMonitors[windowId] {
-                monitor.stopMonitoring()
-                let home = FileManager.default.homeDirectoryForCurrentUser.path
-                let sessionDir = "\(home)/.claude-terminal/sessions/\(monitor.sessionId.uuidString)"
-                try? FileManager.default.removeItem(atPath: sessionDir)
-            }
+            // Stop watching the status file, but leave the session dir on
+            // disk so the menubar popover can surface it as a past session.
+            // Launch-time pruning (AppDelegate+Pruning.swift) caps retention.
+            sessionMonitors[windowId]?.stopMonitoring()
             sidebarStates.removeValue(forKey: windowId)
             sessionMonitors.removeValue(forKey: windowId)
             documentTabStates.removeValue(forKey: windowId)
