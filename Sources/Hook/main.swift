@@ -214,252 +214,18 @@ func runHook() {
     }
 
     switch hookEvent {
-    case "SessionStart":
-        state["status"] = "idle"
-        if let model = event["model"] { state["modelName"] = model }
-        state["currentToolName"] = NSNull()
-        state["toolDetail"] = NSNull()
-        state["subagents"] = []
-        state["tasks"] = []
-        // Do NOT clear documents on SessionStart. Swift seeds this list from
-        // the per-workingdir persist file before the hook runs, so docs
-        // Claude wrote in prior sessions stay in the sidebar.
-        if let ccId = event["session_id"] as? String, !ccId.isEmpty {
-            state["claudeCodeSessionId"] = ccId
-            // Seed displayed cost from last persisted value so the sidebar
-            // shows something immediately on reopen until the first statusline
-            // poll arrives with the authoritative cumulative total.
-            let persist = readPersistMap()
-            if let last = persist[ccId], last["totalCostUsd"] != nil {
-                state["cost"] = last
-            }
-        }
-
-    case "UserPromptSubmit":
-        state["status"] = "thinking"
-        state["currentToolName"] = NSNull()
-        state["toolDetail"] = NSNull()
-        state["activeTools"] = []
-        state["needsInput"] = false
-        let turns = (state["conversationTurns"] as? Int) ?? 0
-        state["conversationTurns"] = turns + 1
-        state["_apiSendMs"] = nowMs()
-        // Jira ticket detection from prompt text
-        if let prompt = event["prompt"] as? String,
-           let cwd = event["cwd"] as? String,
-           !cwd.isEmpty {
-            let pattern = "(?i)(?:ticket|jira|issue|working on|this is for|for ticket)\\s*:?\\s*([A-Z][A-Z0-9]+-\\d+)"
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: prompt, range: NSRange(prompt.startIndex..., in: prompt)),
-               let range = Range(match.range(at: 1), in: prompt) {
-                let ticket = String(prompt[range])
-                let jiraPath = "\(cwd)/.jira-ticket"
-                try? ticket.write(toFile: jiraPath, atomically: true, encoding: .utf8)
-            }
-        }
-
-    case "PreToolUse":
-        let toolName = (event["tool_name"] as? String) ?? ""
-        let toolInput = event["tool_input"]
-        let agentId = (event["agent_id"] as? String) ?? ""
-        let hiddenAgents = readHiddenAgents()
-
-        if !agentId.isEmpty && !hiddenAgents.contains(agentId) {
-            // Subagent's tool use: update the subagent's currentTool
-            var subs = (state["subagents"] as? [[String: Any]]) ?? []
-            for i in 0..<subs.count {
-                if let aid = subs[i]["id"] as? String, aid == agentId {
-                    subs[i]["currentTool"] = toolName
-                    if let d = toolDetail(toolName: toolName, input: toolInput) {
-                        subs[i]["toolDetail"] = d
-                    } else {
-                        subs[i]["toolDetail"] = NSNull()
-                    }
-                    subs[i]["status"] = "streaming"
-                }
-            }
-            state["subagents"] = subs
-        } else {
-            state["status"] = "tool_use"
-            state["needsInput"] = false
-            state["currentToolName"] = toolName
-            if let d = toolDetail(toolName: toolName, input: toolInput) {
-                state["toolDetail"] = d
-            } else {
-                state["toolDetail"] = NSNull()
-            }
-            var active = (state["activeTools"] as? [[String: Any]]) ?? []
-            let toolId = (event["tool_use_id"] as? String) ?? ""
-            if !toolId.isEmpty, !active.contains(where: { ($0["id"] as? String) == toolId }) {
-                var entry: [String: Any] = ["id": toolId, "tool": toolName]
-                entry["detail"] = toolDetail(toolName: toolName, input: toolInput) ?? ""
-                active.append(entry)
-            }
-            state["activeTools"] = active
-
-            if let sendMs = state["_apiSendMs"] as? Int {
-                let duration = nowMs() - sendMs
-                state.removeValue(forKey: "_apiSendMs")
-                recordApiRTT(&state, duration: duration, label: toolName)
-            }
-
-            // Stash the PreToolUse timestamp so PostToolUse can compute how
-            // long the local tool actually took.
-            if !toolId.isEmpty {
-                var startMap = (state["_toolStartMs"] as? [String: Int]) ?? [:]
-                startMap[toolId] = nowMs()
-                state["_toolStartMs"] = startMap
-            }
-
-            if toolName == "AskUserQuestion" {
-                state["needsInput"] = true
-            }
-
-            // Track any viewable file Claude touches — markdown and common
-            // raster/vector image formats. The Swift sidebar renders these
-            // inline (markdown via WebKit, images via NSImage), so capturing
-            // them here makes them clickable in the Documents card.
-            if let dict = toolInput as? [String: Any] {
-                let candidate = (dict["file_path"] as? String) ?? (dict["notebook_path"] as? String)
-                if let fp = candidate {
-                    let lower = fp.lowercased()
-                    let viewableExtensions = [
-                        ".md", ".markdown", ".mdown",
-                        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif",
-                        ".webp", ".heic", ".heif", ".svg", ".ico", ".avif",
-                    ]
-                    if viewableExtensions.contains(where: { lower.hasSuffix($0) }),
-                       !fp.contains("/memory/") {
-                        var docs = (state["documents"] as? [String]) ?? []
-                        if !docs.contains(fp) {
-                            docs.append(fp)
-                            state["documents"] = docs
-                        }
-                    }
-                }
-            }
-        }
-
-        // Track task status changes via TaskUpdate
-        if toolName == "TaskUpdate", let dict = toolInput as? [String: Any],
-           let taskId = dict["taskId"] as? String {
-            var tasks = (state["tasks"] as? [[String: Any]]) ?? []
-            for i in 0..<tasks.count {
-                guard (tasks[i]["id"] as? String) == taskId else { continue }
-                if let newStatus = dict["status"] as? String { tasks[i]["status"] = newStatus }
-                if let subject = dict["subject"] as? String { tasks[i]["subject"] = subject }
-                var blockedBy = (tasks[i]["blockedBy"] as? [String]) ?? []
-                if let added = dict["addBlockedBy"] as? [String] {
-                    for bid in added where !blockedBy.contains(bid) { blockedBy.append(bid) }
-                }
-                if let addBlocks = dict["addBlocks"] as? [String] {
-                    for bid in addBlocks {
-                        for j in 0..<tasks.count where (tasks[j]["id"] as? String) == bid {
-                            var ob = (tasks[j]["blockedBy"] as? [String]) ?? []
-                            if !ob.contains(taskId) { ob.append(taskId) }
-                            tasks[j]["blockedBy"] = ob
-                        }
-                    }
-                }
-                if !blockedBy.isEmpty { tasks[i]["blockedBy"] = blockedBy }
-            }
-            state["tasks"] = tasks
-        }
-
-    case "PostToolUse", "PostToolUseFailure":
-        let agentId = (event["agent_id"] as? String) ?? ""
-        if agentId.isEmpty {
-            let toolId = (event["tool_use_id"] as? String) ?? ""
-            var active = (state["activeTools"] as? [[String: Any]]) ?? []
-            active.removeAll(where: { ($0["id"] as? String) == toolId })
-            state["activeTools"] = active
-            if active.isEmpty { state["status"] = "thinking" }
-
-            // Compute how long this tool took locally and add to the
-            // cumulative tool-time total for the session.
-            if !toolId.isEmpty,
-               var startMap = state["_toolStartMs"] as? [String: Int],
-               let startMs = startMap[toolId] {
-                let duration = nowMs() - startMs
-                if duration >= 0 { recordToolDuration(&state, duration: duration) }
-                startMap.removeValue(forKey: toolId)
-                state["_toolStartMs"] = startMap
-            }
-
-            // Intentionally no Bash-command image-path extraction here.
-            // Three implementations (dir walk, regex, tokenize+fileExists)
-            // all hung PostToolUse:Bash in practice — the common thread is
-            // that blocking filesystem calls from a short-lived CLI
-            // process have no reliable async escape. Read/Write/Edit/
-            // NotebookEdit already surface paths via PreToolUse file_path,
-            // which covers the common cases without any scanning risk.
-
-            state["_apiSendMs"] = nowMs()
-        }
-
-    case "Stop":
-        if let sendMs = state["_apiSendMs"] as? Int {
-            let duration = nowMs() - sendMs
-            state.removeValue(forKey: "_apiSendMs")
-            recordApiRTT(&state, duration: duration, label: "response")
-        }
-        state["status"] = "idle"
-        state["currentToolName"] = NSNull()
-        state["toolDetail"] = NSNull()
-        state["activeTools"] = []
-
-    case "SubagentStart":
-        let agentId = (event["agent_id"] as? String) ?? ""
-        let agentType = (event["agent_type"] as? String) ?? "agent"
-        let hidden = readHiddenAgents()
-        var subs = (state["subagents"] as? [[String: Any]]) ?? []
-        if !agentId.isEmpty, !hidden.contains(agentId),
-           !subs.contains(where: { ($0["id"] as? String) == agentId }) {
-            var entry: [String: Any] = ["id": agentId, "name": agentType, "status": "streaming"]
-            if let desc = event["description"] { entry["description"] = desc }
-            subs.append(entry)
-        }
-        state["subagents"] = subs
-
-    case "SubagentStop":
-        let agentId = (event["agent_id"] as? String) ?? ""
-        var subs = (state["subagents"] as? [[String: Any]]) ?? []
-        subs.removeAll(where: { ($0["id"] as? String) == agentId })
-        state["subagents"] = subs
-        // Also remove from hidden-agents file if present
-        let hiddenPath = "\(statusDir)/hidden-agents"
-        if let existing = try? String(contentsOfFile: hiddenPath, encoding: .utf8) {
-            var ids = Set(existing.split(whereSeparator: { $0.isWhitespace }).map(String.init))
-            ids.remove(agentId)
-            if ids.isEmpty { try? FileManager.default.removeItem(atPath: hiddenPath) }
-            else { try? ids.joined(separator: " ").write(toFile: hiddenPath, atomically: true, encoding: .utf8) }
-        }
-
-    case "TaskCreated":
-        let taskId = (event["task_id"] as? String) ?? ""
-        let subject = (event["task_subject"] as? String) ?? ""
-        var tasks = (state["tasks"] as? [[String: Any]]) ?? []
-        if !taskId.isEmpty, !tasks.contains(where: { ($0["id"] as? String) == taskId }) {
-            tasks.append(["id": taskId, "subject": subject, "status": "pending"])
-        }
-        state["tasks"] = tasks
-
-    case "TaskCompleted":
-        let taskId = (event["task_id"] as? String) ?? ""
-        var tasks = (state["tasks"] as? [[String: Any]]) ?? []
-        for i in 0..<tasks.count where (tasks[i]["id"] as? String) == taskId {
-            tasks[i]["status"] = "completed"
-        }
-        state["tasks"] = tasks
-
-    case "Notification":
-        state["status"] = "idle"
-        state["currentToolName"] = NSNull()
-        state["toolDetail"] = NSNull()
-        state["needsInput"] = true
-
-    default:
-        break
+    case "SessionStart":             handleSessionStart(&state, event: event)
+    case "UserPromptSubmit":         handleUserPromptSubmit(&state, event: event)
+    case "PreToolUse":               handlePreToolUse(&state, event: event)
+    case "PostToolUse",
+         "PostToolUseFailure":       handlePostToolUse(&state, event: event)
+    case "Stop":                     handleStop(&state)
+    case "SubagentStart":            handleSubagentStart(&state, event: event)
+    case "SubagentStop":             handleSubagentStop(&state, event: event)
+    case "TaskCreated":              handleTaskCreated(&state, event: event)
+    case "TaskCompleted":            handleTaskCompleted(&state, event: event)
+    case "Notification":             handleNotification(&state)
+    default:                         break
     }
 
     // Filter out hidden agents before writing
@@ -473,6 +239,285 @@ func runHook() {
     hookLog("stage state.write")
     writeState(state)
     hookLog("stage state.written")
+}
+
+// MARK: - Per-event handlers
+
+func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
+    state["status"] = "idle"
+    if let model = event["model"] { state["modelName"] = model }
+    state["currentToolName"] = NSNull()
+    state["toolDetail"] = NSNull()
+    state["subagents"] = []
+    state["tasks"] = []
+    // Do NOT clear documents on SessionStart. Swift seeds this list from
+    // the per-workingdir persist file before the hook runs, so docs
+    // Claude wrote in prior sessions stay in the sidebar.
+    if let ccId = event["session_id"] as? String, !ccId.isEmpty {
+        state["claudeCodeSessionId"] = ccId
+        // Seed displayed cost from last persisted value so the sidebar
+        // shows something immediately on reopen until the first statusline
+        // poll arrives with the authoritative cumulative total.
+        let persist = readPersistMap()
+        if let last = persist[ccId], last["totalCostUsd"] != nil {
+            state["cost"] = last
+        }
+    }
+}
+
+func handleUserPromptSubmit(_ state: inout [String: Any], event: [String: Any]) {
+    state["status"] = "thinking"
+    state["currentToolName"] = NSNull()
+    state["toolDetail"] = NSNull()
+    state["activeTools"] = []
+    state["needsInput"] = false
+    let turns = (state["conversationTurns"] as? Int) ?? 0
+    state["conversationTurns"] = turns + 1
+    state["_apiSendMs"] = nowMs()
+    detectJiraTicketInPrompt(event: event)
+}
+
+/// Scan the prompt for an inline Jira-ticket reference and persist it to
+/// `<cwd>/.jira-ticket` so the sidebar can pick it up. Picks up phrasings
+/// like "ticket: ABC-123", "jira ABC-123", "this is for ABC-123", etc.
+private func detectJiraTicketInPrompt(event: [String: Any]) {
+    guard let prompt = event["prompt"] as? String,
+          let cwd = event["cwd"] as? String,
+          !cwd.isEmpty else { return }
+    let pattern = "(?i)(?:ticket|jira|issue|working on|this is for|for ticket)\\s*:?\\s*([A-Z][A-Z0-9]+-\\d+)"
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: prompt, range: NSRange(prompt.startIndex..., in: prompt)),
+          let range = Range(match.range(at: 1), in: prompt) else { return }
+    let ticket = String(prompt[range])
+    try? ticket.write(toFile: "\(cwd)/.jira-ticket", atomically: true, encoding: .utf8)
+}
+
+func handlePreToolUse(_ state: inout [String: Any], event: [String: Any]) {
+    let toolName = (event["tool_name"] as? String) ?? ""
+    let toolInput = event["tool_input"]
+    let agentId = (event["agent_id"] as? String) ?? ""
+    let hiddenAgents = readHiddenAgents()
+
+    if !agentId.isEmpty && !hiddenAgents.contains(agentId) {
+        applyPreToolUseToSubagent(&state, agentId: agentId, toolName: toolName, toolInput: toolInput)
+    } else {
+        applyPreToolUseToHost(&state, event: event, toolName: toolName, toolInput: toolInput)
+        captureViewableDocumentPath(&state, toolInput: toolInput)
+    }
+
+    // Track task status changes via TaskUpdate
+    if toolName == "TaskUpdate", let dict = toolInput as? [String: Any],
+       let taskId = dict["taskId"] as? String {
+        applyTaskUpdate(&state, taskId: taskId, dict: dict)
+    }
+}
+
+private func applyPreToolUseToSubagent(
+    _ state: inout [String: Any],
+    agentId: String,
+    toolName: String,
+    toolInput: Any?
+) {
+    var subs = (state["subagents"] as? [[String: Any]]) ?? []
+    for i in 0..<subs.count {
+        if let aid = subs[i]["id"] as? String, aid == agentId {
+            subs[i]["currentTool"] = toolName
+            if let d = toolDetail(toolName: toolName, input: toolInput) {
+                subs[i]["toolDetail"] = d
+            } else {
+                subs[i]["toolDetail"] = NSNull()
+            }
+            subs[i]["status"] = "streaming"
+        }
+    }
+    state["subagents"] = subs
+}
+
+private func applyPreToolUseToHost(
+    _ state: inout [String: Any],
+    event: [String: Any],
+    toolName: String,
+    toolInput: Any?
+) {
+    state["status"] = "tool_use"
+    state["needsInput"] = false
+    state["currentToolName"] = toolName
+    if let d = toolDetail(toolName: toolName, input: toolInput) {
+        state["toolDetail"] = d
+    } else {
+        state["toolDetail"] = NSNull()
+    }
+    var active = (state["activeTools"] as? [[String: Any]]) ?? []
+    let toolId = (event["tool_use_id"] as? String) ?? ""
+    if !toolId.isEmpty, !active.contains(where: { ($0["id"] as? String) == toolId }) {
+        var entry: [String: Any] = ["id": toolId, "tool": toolName]
+        entry["detail"] = toolDetail(toolName: toolName, input: toolInput) ?? ""
+        active.append(entry)
+    }
+    state["activeTools"] = active
+
+    if let sendMs = state["_apiSendMs"] as? Int {
+        let duration = nowMs() - sendMs
+        state.removeValue(forKey: "_apiSendMs")
+        recordApiRTT(&state, duration: duration, label: toolName)
+    }
+
+    // Stash the PreToolUse timestamp so PostToolUse can compute how
+    // long the local tool actually took.
+    if !toolId.isEmpty {
+        var startMap = (state["_toolStartMs"] as? [String: Int]) ?? [:]
+        startMap[toolId] = nowMs()
+        state["_toolStartMs"] = startMap
+    }
+
+    if toolName == "AskUserQuestion" {
+        state["needsInput"] = true
+    }
+}
+
+/// Track any viewable file Claude touches — markdown and common
+/// raster/vector image formats. The Swift sidebar renders these
+/// inline (markdown via WebKit, images via NSImage), so capturing
+/// them here makes them clickable in the Documents card.
+private func captureViewableDocumentPath(_ state: inout [String: Any], toolInput: Any?) {
+    guard let dict = toolInput as? [String: Any] else { return }
+    let candidate = (dict["file_path"] as? String) ?? (dict["notebook_path"] as? String)
+    guard let fp = candidate else { return }
+    let lower = fp.lowercased()
+    let viewableExtensions = [
+        ".md", ".markdown", ".mdown",
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif",
+        ".webp", ".heic", ".heif", ".svg", ".ico", ".avif",
+    ]
+    guard viewableExtensions.contains(where: { lower.hasSuffix($0) }),
+          !fp.contains("/memory/") else { return }
+    var docs = (state["documents"] as? [String]) ?? []
+    if !docs.contains(fp) {
+        docs.append(fp)
+        state["documents"] = docs
+    }
+}
+
+private func applyTaskUpdate(_ state: inout [String: Any], taskId: String, dict: [String: Any]) {
+    var tasks = (state["tasks"] as? [[String: Any]]) ?? []
+    for i in 0..<tasks.count {
+        guard (tasks[i]["id"] as? String) == taskId else { continue }
+        if let newStatus = dict["status"] as? String { tasks[i]["status"] = newStatus }
+        if let subject = dict["subject"] as? String { tasks[i]["subject"] = subject }
+        var blockedBy = (tasks[i]["blockedBy"] as? [String]) ?? []
+        if let added = dict["addBlockedBy"] as? [String] {
+            for bid in added where !blockedBy.contains(bid) { blockedBy.append(bid) }
+        }
+        if let addBlocks = dict["addBlocks"] as? [String] {
+            for bid in addBlocks {
+                for j in 0..<tasks.count where (tasks[j]["id"] as? String) == bid {
+                    var ob = (tasks[j]["blockedBy"] as? [String]) ?? []
+                    if !ob.contains(taskId) { ob.append(taskId) }
+                    tasks[j]["blockedBy"] = ob
+                }
+            }
+        }
+        if !blockedBy.isEmpty { tasks[i]["blockedBy"] = blockedBy }
+    }
+    state["tasks"] = tasks
+}
+
+func handlePostToolUse(_ state: inout [String: Any], event: [String: Any]) {
+    let agentId = (event["agent_id"] as? String) ?? ""
+    guard agentId.isEmpty else { return }
+    let toolId = (event["tool_use_id"] as? String) ?? ""
+    var active = (state["activeTools"] as? [[String: Any]]) ?? []
+    active.removeAll(where: { ($0["id"] as? String) == toolId })
+    state["activeTools"] = active
+    if active.isEmpty { state["status"] = "thinking" }
+
+    // Compute how long this tool took locally and add to the
+    // cumulative tool-time total for the session.
+    if !toolId.isEmpty,
+       var startMap = state["_toolStartMs"] as? [String: Int],
+       let startMs = startMap[toolId] {
+        let duration = nowMs() - startMs
+        if duration >= 0 { recordToolDuration(&state, duration: duration) }
+        startMap.removeValue(forKey: toolId)
+        state["_toolStartMs"] = startMap
+    }
+
+    // Intentionally no Bash-command image-path extraction here.
+    // Three implementations (dir walk, regex, tokenize+fileExists)
+    // all hung PostToolUse:Bash in practice — the common thread is
+    // that blocking filesystem calls from a short-lived CLI
+    // process have no reliable async escape. Read/Write/Edit/
+    // NotebookEdit already surface paths via PreToolUse file_path,
+    // which covers the common cases without any scanning risk.
+
+    state["_apiSendMs"] = nowMs()
+}
+
+func handleStop(_ state: inout [String: Any]) {
+    if let sendMs = state["_apiSendMs"] as? Int {
+        let duration = nowMs() - sendMs
+        state.removeValue(forKey: "_apiSendMs")
+        recordApiRTT(&state, duration: duration, label: "response")
+    }
+    state["status"] = "idle"
+    state["currentToolName"] = NSNull()
+    state["toolDetail"] = NSNull()
+    state["activeTools"] = []
+}
+
+func handleSubagentStart(_ state: inout [String: Any], event: [String: Any]) {
+    let agentId = (event["agent_id"] as? String) ?? ""
+    let agentType = (event["agent_type"] as? String) ?? "agent"
+    let hidden = readHiddenAgents()
+    var subs = (state["subagents"] as? [[String: Any]]) ?? []
+    if !agentId.isEmpty, !hidden.contains(agentId),
+       !subs.contains(where: { ($0["id"] as? String) == agentId }) {
+        var entry: [String: Any] = ["id": agentId, "name": agentType, "status": "streaming"]
+        if let desc = event["description"] { entry["description"] = desc }
+        subs.append(entry)
+    }
+    state["subagents"] = subs
+}
+
+func handleSubagentStop(_ state: inout [String: Any], event: [String: Any]) {
+    let agentId = (event["agent_id"] as? String) ?? ""
+    var subs = (state["subagents"] as? [[String: Any]]) ?? []
+    subs.removeAll(where: { ($0["id"] as? String) == agentId })
+    state["subagents"] = subs
+    // Also remove from hidden-agents file if present
+    let hiddenPath = "\(statusDir)/hidden-agents"
+    if let existing = try? String(contentsOfFile: hiddenPath, encoding: .utf8) {
+        var ids = Set(existing.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+        ids.remove(agentId)
+        if ids.isEmpty { try? FileManager.default.removeItem(atPath: hiddenPath) }
+        else { try? ids.joined(separator: " ").write(toFile: hiddenPath, atomically: true, encoding: .utf8) }
+    }
+}
+
+func handleTaskCreated(_ state: inout [String: Any], event: [String: Any]) {
+    let taskId = (event["task_id"] as? String) ?? ""
+    let subject = (event["task_subject"] as? String) ?? ""
+    var tasks = (state["tasks"] as? [[String: Any]]) ?? []
+    if !taskId.isEmpty, !tasks.contains(where: { ($0["id"] as? String) == taskId }) {
+        tasks.append(["id": taskId, "subject": subject, "status": "pending"])
+    }
+    state["tasks"] = tasks
+}
+
+func handleTaskCompleted(_ state: inout [String: Any], event: [String: Any]) {
+    let taskId = (event["task_id"] as? String) ?? ""
+    var tasks = (state["tasks"] as? [[String: Any]]) ?? []
+    for i in 0..<tasks.count where (tasks[i]["id"] as? String) == taskId {
+        tasks[i]["status"] = "completed"
+    }
+    state["tasks"] = tasks
+}
+
+func handleNotification(_ state: inout [String: Any]) {
+    state["status"] = "idle"
+    state["currentToolName"] = NSNull()
+    state["toolDetail"] = NSNull()
+    state["needsInput"] = true
 }
 
 func readHiddenAgents() -> Set<String> {

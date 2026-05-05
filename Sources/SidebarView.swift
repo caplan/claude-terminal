@@ -1,16 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private extension Color {
-    init(hex: UInt32) {
-        self.init(
-            red:   Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >>  8) & 0xFF) / 255,
-            blue:  Double( hex        & 0xFF) / 255
-        )
-    }
-}
-
 struct SidebarView: View {
     @ObservedObject var monitor: SessionMonitor
     @ObservedObject var tabState: DocumentTabState
@@ -23,63 +13,6 @@ struct SidebarView: View {
     /// down, so the user can glance up from the terminal and still see what
     /// Claude last said.
     @State private var idleAt: Date?
-    /// Per-second snapshots of session activity, powering the bidirectional
-    /// activity bar chart in the Where Time Went section. Each sample reflects
-    /// the fraction of the second spent in each bucket (0..1) plus how long
-    /// the bucket has been continuously busy at sample time — the streak
-    /// drives a blue → yellow → orange → red → dark-red color ramp so a
-    /// stuck call jumps out visually.
-    @State private var activitySamples: [ActivitySample] = []
-    /// 100ms sub-samples accumulated into the next emitted activitySample.
-    @State private var subSampleClaude: Int = 0
-    @State private var subSampleTool: Int = 0
-    @State private var subSampleCount: Int = 0
-    /// Continuous-busy duration (seconds) for each bucket. Reset to 0 the
-    /// instant the bucket goes idle.
-    @State private var claudeStreakSecs: Double = 0
-    @State private var toolStreakSecs: Double = 0
-    /// Wall-clock time of the most recent emitted sample. The chart's
-    /// TimelineView animation interpolates between samples by reading
-    /// `Date().timeIntervalSince(lastSampleTime)` and scaling it to a
-    /// horizontal slide of one bar-width per second.
-    @State private var lastSampleTime: Date = Date()
-    /// Diagnostic state for the activity logger — only writes a line on
-    /// status / claudeBusy / toolBusy transitions, not every tick.
-    @State private var loggedClaudeBusy: Bool? = nil
-    @State private var loggedToolBusy: Bool? = nil
-    @State private var loggedStatusRaw: String? = nil
-    /// Last observed cumulative tool-ms — used to detect short-lived tools
-    /// (Read/Edit/etc.) that complete between two 10Hz ticks.
-    @State private var lastObservedToolMsTotal: Int = 0
-    /// Set of tool IDs that were active on the previous tick. Any new ID
-    /// this tick means a fresh tool started, so the tool hue ramp resets.
-    @State private var prevActiveToolIds: Set<String> = []
-    /// True if a new tool began during the current 3s window — the emitted
-    /// sample inherits this flag and the chart adds a small left inset to
-    /// the tool rectangle, visually separating it from the prior tool run.
-    @State private var toolStartedThisWindow: Bool = false
-    /// Distinct tool names seen during the current 3s window, in first-
-    /// observed order. Rendered as a hover tooltip on the tool bar so
-    /// users can see which tools produced the activity.
-    @State private var toolNamesThisWindow: [String] = []
-    private static let activityWindow = 60
-    private static let subSampleHz: Double = 10
-    private static let barDurationSecs: Double = 3
-    private static let subSamplesPerSample = Int(subSampleHz * barDurationSecs)
-
-    private struct ActivitySample: Equatable {
-        let claude: Double          // 0..1 fraction of second
-        let tool: Double            // 0..1 fraction of second
-        let claudeStreakSecs: Double
-        let toolStreakSecs: Double
-        // True if a new tool started during this window — the renderer
-        // adds a left inset so the bar visually detaches from the prior
-        // tool's run of bars.
-        let toolIsNewToolStart: Bool
-        // Distinct tool names observed during this window, in first-seen
-        // order. Surfaced as the hover tooltip on the tool bar.
-        let toolNames: [String]
-    }
     /// User toggle for the Documents section. Defaults to expanded; persisted
     /// in UserDefaults so it survives relaunches and is shared across windows
     /// (one global preference, not per-session — matches sidebar visibility).
@@ -95,10 +28,10 @@ struct SidebarView: View {
                 sectionCard { statusSection }
 
                 if !state.subagents.isEmpty {
-                    sectionCard { subagentsSection }
+                    sectionCard { SubagentsSection(monitor: monitor) }
                 }
                 if state.tasks.contains(where: { $0.status != "completed" }) {
-                    sectionCard { tasksSection }
+                    sectionCard { TasksSection(monitor: monitor) }
                 }
                 // state.documents is pre-filtered for file existence in
                 // SessionMonitor.readAndDecode; trust it here to avoid stat
@@ -108,7 +41,7 @@ struct SidebarView: View {
                         // Collapsed: just the header card with the disclosure
                         // triangle + count. Doesn't expand to fill height, so
                         // the bottom sections move up.
-                        sectionCard { documentsHeader(count: docs.count) }
+                        sectionCard { DocumentsHeader(count: docs.count) }
                         Spacer(minLength: 0)
                     } else {
                         let fullCount = fullSizeDocCount(
@@ -117,7 +50,14 @@ struct SidebarView: View {
                             collapse: collapse
                         )
                         ScrollView(.vertical, showsIndicators: false) {
-                            sectionCard { documentsSection(docs.reversed(), fullCount: fullCount) }
+                            sectionCard {
+                                DocumentsSection(
+                                    docs: docs.reversed(),
+                                    fullCount: fullCount,
+                                    monitor: monitor,
+                                    tabState: tabState
+                                )
+                            }
                         }
                         .frame(maxHeight: .infinity)
                     }
@@ -125,7 +65,7 @@ struct SidebarView: View {
                     Spacer(minLength: 0)
                 }
 
-                sectionCard { activitySection() }
+                sectionCard { ActivityChartView(state: state, apiWaitSeconds: apiWaitSeconds) }
                 if let context = state.contextUsage {
                     sectionCard {
                         if collapse >= 3 {
@@ -150,9 +90,6 @@ struct SidebarView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .background(VisualEffectBackground(material: .sidebar))
-        .onReceive(Timer.publish(every: 1.0 / Self.subSampleHz, on: .main, in: .common).autoconnect()) { _ in
-            tickActivitySubSample()
-        }
         // Cascades to every Text inside the sidebar so prose, paths, costs,
         // assistant headlines, etc. can be selected and copied. Buttons /
         // tappable cards still take precedence for click handling because
@@ -662,27 +599,6 @@ struct SidebarView: View {
         }
     }
 
-    private func activitySection() -> some View {
-        let isActive = state.status == .thinking || state.status == .toolUse || state.status == .streaming
-        let waitingSec = apiWaitSeconds
-        let isSlow = waitingSec > 15
-        let dotColor: Color = isSlow ? .orange : (isActive ? .blue : Color(nsColor: .separatorColor))
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionHeader("Activity")
-                Spacer()
-                if isActive {
-                    PulsingDot(color: dotColor)
-                } else {
-                    Circle()
-                        .fill(Color(nsColor: .separatorColor))
-                        .frame(width: 6, height: 6)
-                }
-            }
-            activityChart()
-        }
-    }
-
     private func timeStackedBar(apiMs: Int, toolMs: Int) -> some View {
         let total = max(1, apiMs + toolMs)
         let apiFrac = Double(apiMs) / Double(total)
@@ -695,277 +611,6 @@ struct SidebarView: View {
                     .fill(Color.green)
             }
             .clipShape(RoundedRectangle(cornerRadius: 2))
-        }
-    }
-
-    /// Bidirectional activity history. The horizontal mid-line is the
-    /// baseline: Claude bars grow upward from it, tool bars grow downward.
-    /// Bar height is proportional to the fraction of that second the bucket
-    /// was busy. Bar color ramps from light desaturated blue → yellow →
-    /// orange → red → dark red as the bucket's continuous-busy streak grows
-    /// past 5/15/30/60s, so a hung call is obvious at a glance.
-    private func activityChart() -> some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .trailing, spacing: 0) {
-                Text("Claude")
-                    .font(.system(size: 9))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                Text("Tools")
-                    .font(.system(size: 9))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                    .frame(maxHeight: .infinity, alignment: .top)
-            }
-            .frame(height: 48)
-            GeometryReader { geo in
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
-                    let progress = max(0, min(1, ctx.date.timeIntervalSince(lastSampleTime) / Self.barDurationSecs))
-                    let halfH = geo.size.height / 2
-                    let columns = Self.activityWindow + 1
-                    let spacing: CGFloat = 0
-                    // Pitch = chart-visible-width / activityWindow keeps
-                    // exactly `activityWindow` bars filling the visible area
-                    // at progress=0; the +1th bar lives just past the right
-                    // edge and slides in as `progress` ramps to 1.
-                    let pitch = geo.size.width / CGFloat(Self.activityWindow)
-                    let barW = max(0, pitch - spacing)
-                    let totalW = pitch * CGFloat(columns) - spacing
-                    let offset = -pitch * CGFloat(progress)
-                    // Right-align: fill slots from the right so the newest
-                    // sample lands at slot `columns-1` (offscreen-right,
-                    // sliding into view as progress ramps to 1). Empty
-                    // slots stay on the left until the buffer fills.
-                    let firstUsedSlot = columns - activitySamples.count
-
-                    HStack(alignment: .center, spacing: spacing) {
-                        ForEach(0..<columns, id: \.self) { i in
-                            let idx = i - firstUsedSlot
-                            let s: ActivitySample = (idx >= 0 && idx < activitySamples.count)
-                                ? activitySamples[idx]
-                                : ActivitySample(claude: 0, tool: 0,
-                                                  claudeStreakSecs: 0, toolStreakSecs: 0,
-                                                  toolIsNewToolStart: false,
-                                                  toolNames: [])
-                            let toolTip = s.toolNames.joined(separator: ", ")
-                            // Minimum visible height per bucket. Tools get
-                            // a much higher floor because tool events are
-                            // usually 30-60 ms blips in 3s windows, which
-                            // otherwise render as near-invisible slivers
-                            // next to full-height Claude neighbors. Claude
-                            // bars need little help since pure thinking
-                            // typically spans most of a 3s window.
-                            let claudeH = s.claude > 0 ? max(0.15, s.claude) : 0
-                            let toolH   = s.tool   > 0 ? max(0.50, s.tool)   : 0
-                            VStack(spacing: 0) {
-                                // Upper half — Claude bar pinned to the
-                                // CENTERLINE via ZStack alignment: .bottom.
-                                ZStack(alignment: .bottom) {
-                                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    if claudeH > 0 {
-                                        Rectangle()
-                                            .fill(Self.intensityColor(streakSecs: s.claudeStreakSecs))
-                                            .frame(height: halfH * claudeH)
-                                    }
-                                }
-                                .frame(height: halfH)
-                                // Lower half — Tool bar pinned to the
-                                // CENTERLINE via ZStack alignment: .top.
-                                // `padding(.leading)` is the 1-px inset
-                                // marker when a fresh tool begins.
-                                ZStack(alignment: .top) {
-                                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    if toolH > 0 {
-                                        Rectangle()
-                                            .fill(Self.intensityColor(streakSecs: s.toolStreakSecs))
-                                            .frame(height: halfH * toolH)
-                                            .padding(.leading, s.toolIsNewToolStart ? 1 : 0)
-                                            .help(toolTip)
-                                    }
-                                }
-                                .frame(height: halfH)
-                            }
-                            .frame(width: barW)
-                        }
-                    }
-                    .frame(width: totalW, alignment: .leading)
-                    .offset(x: offset)
-                }
-            }
-            .frame(height: 48)
-            .clipped()
-            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.10))
-            .cornerRadius(2)
-        }
-        // Single continuous divider spanning labels + chart — overlaying
-        // the outer HStack avoids the visible gap that two separate
-        // per-column overlays would leave in the middle.
-        .overlay(
-            Rectangle()
-                .fill(Color(nsColor: .secondaryLabelColor).opacity(0.7))
-                .frame(height: 1)
-        )
-    }
-
-    /// Streak duration → color ramp. The gradient peaks at 120 seconds of
-    /// continuous busy: light blue → deep blue → green → orange → red.
-    /// Stops are interpolated linearly in RGB.
-    private static let intensityStops: [(Double, UInt32)] = [
-        (0.00, 0xBFDCFF),  //   0s — light blue (idle)
-        (0.22, 0x0B3A99),  //  26s — deep blue
-        (0.48, 0x166534),  //  58s — green
-        (0.78, 0xFF8A1F),  //  94s — orange
-        (1.00, 0xDC2626),  // 120s+ — red
-    ]
-    private static let intensityMaxSecs: Double = 1800
-
-    private static let debugLogPath: String = {
-        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude-terminal")
-        return (dir as NSString).appendingPathComponent("debug.log")
-    }()
-
-    private static func debugTimestamp() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        return f.string(from: Date())
-    }
-
-    private static func appendDebugLog(_ line: String) {
-        guard let data = line.data(using: .utf8) else { return }
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: debugLogPath) {
-            try? fm.createDirectory(
-                atPath: (debugLogPath as NSString).deletingLastPathComponent,
-                withIntermediateDirectories: true
-            )
-            fm.createFile(atPath: debugLogPath, contents: nil)
-        }
-        if let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: debugLogPath)) {
-            defer { try? h.close() }
-            try? h.seekToEnd()
-            try? h.write(contentsOf: data)
-        }
-    }
-
-    private static func intensityColor(streakSecs: Double) -> Color {
-        let t = max(0, min(1, streakSecs / intensityMaxSecs))
-        if t >= intensityStops.last!.0 {
-            return Color(hex: intensityStops.last!.1)
-        }
-        for i in 0..<(intensityStops.count - 1) {
-            let (ta, ha) = intensityStops[i]
-            let (tb, hb) = intensityStops[i + 1]
-            if t >= ta && t < tb {
-                let f = (t - ta) / (tb - ta)
-                let ar = Double((ha >> 16) & 0xFF), ag = Double((ha >> 8) & 0xFF), ab = Double(ha & 0xFF)
-                let br = Double((hb >> 16) & 0xFF), bg = Double((hb >> 8) & 0xFF), bb = Double(hb & 0xFF)
-                return Color(
-                    red:   (ar + (br - ar) * f) / 255,
-                    green: (ag + (bg - ag) * f) / 255,
-                    blue:  (ab + (bb - ab) * f) / 255
-                )
-            }
-        }
-        return Color(hex: intensityStops.first!.1)
-    }
-
-    /// 10Hz sub-sampler. Updates streak counters and accumulates 100ms
-    /// fragments. At the 1-second boundary we emit one finalized sample —
-    /// the chart animates the horizontal slide on its own via TimelineView,
-    /// using `lastSampleTime` to interpolate the offset.
-    ///
-    /// Claude and Tool buckets are sampled independently: a sub-tick where
-    /// the API is in flight counts toward Claude even if a tool is also
-    /// running. Otherwise rapid tool chains mask the brief thinking gaps
-    /// and the chart misleadingly looks like 100% tool work.
-    private func tickActivitySubSample() {
-        // When Claude is blocked on a permission prompt the session shows
-        // status=tool_use but it isn't actually working — it's waiting on
-        // the user. Treat that as zero activity so neither bar grows.
-        let needsInput = state.needsInput == true
-        // A tool that started and finished within a single 100ms tick
-        // (very common for Read/Edit/Glob/Grep) won't be visible via the
-        // status snapshot — but the hook will have bumped toolMsTotal.
-        // Detecting a positive delta lets us still credit those samples.
-        let cumulativeToolMs = state.network?.toolMsTotal ?? 0
-        let toolJustFinished = cumulativeToolMs > lastObservedToolMsTotal
-        lastObservedToolMsTotal = cumulativeToolMs
-        let toolBusy = !needsInput
-            && (!(state.activeTools ?? []).isEmpty
-                || state.status == .toolUse
-                || toolJustFinished)
-        // Claude bar tracks only real LLM work — a tool starting ends the
-        // Claude bar immediately. Ticks where a tool is running OR just
-        // finished (caught by `toolJustFinished`) are credited to the
-        // tool bar exclusively; otherwise a short sub-100ms tool gets
-        // sampled as Claude because `status==.thinking` in the same tick.
-        let claudeBusy = !needsInput && !toolBusy
-            && (state.status == .thinking || state.status == .streaming)
-
-        // Diagnostic: log state transitions to ~/.claude-terminal/debug.log
-        // so we can verify that .thinking is actually observed between tools.
-        let statusRaw = state.status.rawValue
-        if statusRaw != loggedStatusRaw
-            || claudeBusy != loggedClaudeBusy
-            || toolBusy != loggedToolBusy {
-            let toolCount = state.activeTools?.count ?? 0
-            let line = "\(Self.debugTimestamp())  status=\(statusRaw) claudeBusy=\(claudeBusy) toolBusy=\(toolBusy) activeTools=\(toolCount)\n"
-            Self.appendDebugLog(line)
-            loggedStatusRaw = statusRaw
-            loggedClaudeBusy = claudeBusy
-            loggedToolBusy = toolBusy
-        }
-
-        if claudeBusy {
-            subSampleClaude += 1
-            claudeStreakSecs += 1.0 / Self.subSampleHz
-        } else {
-            claudeStreakSecs = 0
-        }
-        // Reset the tool hue ramp each time a fresh tool starts — the
-        // streak measures how long *this* tool has been running, not the
-        // cumulative run of back-to-back tools. Detect a new tool by any
-        // active tool ID that wasn't present on the previous tick.
-        let currentToolIds = Set((state.activeTools ?? []).map(\.id))
-        let newToolStarted = !currentToolIds.subtracting(prevActiveToolIds).isEmpty
-        prevActiveToolIds = currentToolIds
-        if newToolStarted {
-            toolStreakSecs = 0
-            toolStartedThisWindow = true
-        }
-        for t in state.activeTools ?? [] where !toolNamesThisWindow.contains(t.tool) {
-            toolNamesThisWindow.append(t.tool)
-        }
-        if toolBusy {
-            subSampleTool += 1
-            toolStreakSecs += 1.0 / Self.subSampleHz
-        } else {
-            toolStreakSecs = 0
-        }
-        subSampleCount += 1
-
-        if subSampleCount >= Self.subSamplesPerSample {
-            let denom = Double(Self.subSamplesPerSample)
-            let sample = ActivitySample(
-                claude: Double(subSampleClaude) / denom,
-                tool: Double(subSampleTool) / denom,
-                claudeStreakSecs: claudeStreakSecs,
-                toolStreakSecs: toolStreakSecs,
-                toolIsNewToolStart: toolStartedThisWindow,
-                toolNames: toolNamesThisWindow
-            )
-            // Keep one extra bar offscreen on the right so we always have
-            // something to slide into view as the HStack scrolls left.
-            activitySamples.append(sample)
-            let cap = Self.activityWindow + 1
-            if activitySamples.count > cap {
-                activitySamples.removeFirst(activitySamples.count - cap)
-            }
-            lastSampleTime = Date()
-            subSampleClaude = 0
-            subSampleTool = 0
-            subSampleCount = 0
-            toolStartedThisWindow = false
-            toolNamesThisWindow = []
         }
     }
 
@@ -984,348 +629,12 @@ struct SidebarView: View {
         return max(0, elapsed / 1000)
     }
 
-    private var subagentsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Subagents")
-            ForEach(state.subagents) { agent in
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor(agent.status))
-                        .frame(width: 6, height: 6)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(agent.name)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.primary)
-                            if let tool = agent.currentTool {
-                                Text(tool)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(toolColor(tool))
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(toolColor(tool).opacity(0.12))
-                                    .cornerRadius(3)
-                            }
-                        }
-                        if let desc = agent.description {
-                            Text(desc)
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                                .lineLimit(1)
-                        }
-                        if let tool = agent.currentTool, let detail = agent.toolDetail, !detail.isEmpty {
-                            Text(toolDetailLabel(tool, detail: detail))
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                                .lineLimit(2)
-                                .truncationMode(.middle)
-                        }
-                    }
-                }
-                .contextMenu {
-                    Button("Force Quit") {
-                        monitor.removeSubagent(agent.id)
-                    }
-                }
-            }
-        }
-    }
-
-    private var tasksSection: some View {
-        let sorted = topologicallySorted(state.tasks)
-        let depthMap = taskDepths(state.tasks)
-        return VStack(alignment: .leading, spacing: 8) {
-            let completed = state.tasks.filter { $0.status == "completed" }.count
-            let total = state.tasks.count
-            HStack {
-                sectionHeader("Tasks")
-                Spacer()
-                Text("\(completed)/\(total)")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-            }
-            ForEach(sorted) { task in
-                let depth = depthMap[task.id, default: 0]
-                let isBlocked = taskIsBlocked(task)
-                HStack(spacing: 0) {
-                    if depth > 0 {
-                        HStack(spacing: 0) {
-                            ForEach(0..<depth, id: \.self) { i in
-                                if i == depth - 1 {
-                                    Image(systemName: "arrow.turn.down.right")
-                                        .font(.system(size: 9))
-                                        .foregroundColor(Color(nsColor: .separatorColor))
-                                        .frame(width: 14)
-                                } else {
-                                    Color.clear.frame(width: 14)
-                                }
-                            }
-                        }
-                    }
-                    HStack(spacing: 8) {
-                        if task.status == "in_progress" {
-                            SpinningIcon(systemName: "arrow.trianglehead.2.clockwise", color: .blue)
-                        } else if isBlocked {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 10))
-                                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        } else {
-                            Image(systemName: taskIcon(task.status))
-                                .font(.system(size: 13))
-                                .foregroundColor(taskColor(task.status))
-                        }
-                        Text(task.subject)
-                            .font(.system(size: 13, weight: task.status == "in_progress" ? .semibold : .regular))
-                            .foregroundColor(
-                                task.status == "completed" ? Color(nsColor: .tertiaryLabelColor) :
-                                isBlocked ? Color(nsColor: .secondaryLabelColor) : .primary
-                            )
-                            .lineLimit(2)
-                    }
-                }
-            }
-        }
-    }
-
-    private func documentsSection<S: Sequence>(_ docs: S, fullCount: Int) -> some View where S.Element == String {
-        let paths = Array(docs)
-        return VStack(alignment: .leading, spacing: 4) {
-            documentsHeader(count: paths.count)
-            ForEach(Array(paths.enumerated()), id: \.element) { index, path in
-                documentCard(path: path, compact: index >= fullCount)
-            }
-        }
-    }
-
-    /// Section header with a leading disclosure triangle. Clicking anywhere
-    /// on the header (triangle, label, or trailing count) toggles
-    /// `documentsCollapsed`, which is persisted via @AppStorage and applies
-    /// across all session windows.
-    private func documentsHeader(count: Int) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                documentsCollapsed.toggle()
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    .rotationEffect(.degrees(documentsCollapsed ? 0 : 90))
-                Text("DOCUMENTS")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    .tracking(0.5)
-                Spacer()
-                if documentsCollapsed {
-                    Text("\(count)")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                }
-            }
-            .contentShape(Rectangle())
-            .textSelection(.disabled)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func documentCard(path: String, compact: Bool = false) -> some View {
-        let isImage = ViewableDocument.isImage(path)
-        let isMarkdown = ViewableDocument.isMarkdown(path)
-        let meta = (compact || isImage) ? nil : DocumentExcerptCache.excerpt(for: path)
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Image(systemName: documentIcon(path))
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                Text((path as NSString).lastPathComponent)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if !compact, isImage {
-                imageThumbnail(path: path)
-            }
-            if let meta, !meta.title.isEmpty || !meta.excerpt.isEmpty {
-                VStack(alignment: .leading, spacing: 1) {
-                    if !meta.title.isEmpty {
-                        Text(meta.title)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                            .lineLimit(1)
-                    }
-                    if !meta.excerpt.isEmpty {
-                        Text(meta.excerpt)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                            .lineLimit(2)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, compact ? 3 : 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(DocumentCardHoverModifier())
-        .help(path)
-        .onTapGesture {
-            if isMarkdown || isImage {
-                tabState.open(path: path)
-                monitor.addDocument(path: path)
-            } else {
-                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            }
-        }
-        .contextMenu {
-            if isMarkdown || isImage {
-                Button("Open in Tab") {
-                    tabState.open(path: path)
-                    monitor.addDocument(path: path)
-                }
-                Divider()
-            }
-            Button("Open in Default App") {
-                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            }
-            Button("Open With...") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    let panel = NSOpenPanel()
-                    panel.message = "Choose an application"
-                    panel.allowedContentTypes = [.application]
-                    panel.directoryURL = URL(fileURLWithPath: "/Applications")
-                    panel.canChooseFiles = true
-                    panel.canChooseDirectories = false
-                    if panel.runModal() == .OK, let appURL = panel.url {
-                        NSWorkspace.shared.open(
-                            [URL(fileURLWithPath: path)],
-                            withApplicationAt: appURL,
-                            configuration: NSWorkspace.OpenConfiguration()
-                        )
-                    }
-                }
-            }
-            Button("Show in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-            }
-            Divider()
-            Button("Copy Path") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(path, forType: .string)
-            }
-            Divider()
-            Button("Remove from Sidebar") {
-                if let openTab = tabState.tabs.first(where: { $0.path == path }) {
-                    tabState.close(id: openTab.id)
-                }
-                monitor.removeDocument(path: path)
-            }
-        }
-    }
-
-    private func abbreviateFilePath(_ path: String) -> String {
-        let filename = (path as NSString).lastPathComponent
-        let dir = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
-        return dir.isEmpty ? filename : "\(dir)/\(filename)"
-    }
-
-    private func documentIcon(_ path: String) -> String {
-        if ViewableDocument.isImage(path) { return "photo" }
-        return "doc.text"
-    }
-
-    /// Loads the image off the main thread (NSImage(contentsOf:) is mostly
-    /// header-only, but full decode for big PNGs can stall). Renders inside
-    /// a fixed-height frame so doc cards don't jump as images load.
-    @ViewBuilder
-    private func imageThumbnail(path: String) -> some View {
-        ImageThumbnail(path: path)
-            .frame(maxWidth: .infinity)
-            .frame(height: 96)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-
-    private func taskIsBlocked(_ task: SessionTask) -> Bool {
-        guard let blockers = task.blockedBy, !blockers.isEmpty else { return false }
-        return blockers.contains { bid in
-            state.tasks.contains { $0.id == bid && $0.status != "completed" }
-        }
-    }
-
-    private func topologicallySorted(_ tasks: [SessionTask]) -> [SessionTask] {
-        let ids = Set(tasks.map(\.id))
-        var graph: [String: [String]] = [:]
-        var inDegree: [String: Int] = [:]
-        for t in tasks {
-            graph[t.id] = []
-            inDegree[t.id] = 0
-        }
-        for t in tasks {
-            for bid in t.blockedBy ?? [] where ids.contains(bid) {
-                graph[bid, default: []].append(t.id)
-                inDegree[t.id, default: 0] += 1
-            }
-        }
-        var queue = tasks.filter { inDegree[$0.id, default: 0] == 0 }.map(\.id)
-        var order: [String] = []
-        var idx = 0
-        while idx < queue.count {
-            let curr = queue[idx]
-            idx += 1
-            order.append(curr)
-            for dep in graph[curr, default: []] {
-                inDegree[dep, default: 0] -= 1
-                if inDegree[dep, default: 0] == 0 {
-                    queue.append(dep)
-                }
-            }
-        }
-        let taskMap = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
-        var result = order.compactMap { taskMap[$0] }
-        let ordered = Set(order)
-        result += tasks.filter { !ordered.contains($0.id) }
-        return result
-    }
-
-    private func taskDepths(_ tasks: [SessionTask]) -> [String: Int] {
-        let ids = Set(tasks.map(\.id))
-        var depths: [String: Int] = [:]
-        for t in tasks {
-            depths[t.id] = 0
-        }
-        var changed = true
-        while changed {
-            changed = false
-            for t in tasks {
-                for bid in t.blockedBy ?? [] where ids.contains(bid) {
-                    let newDepth = depths[bid, default: 0] + 1
-                    if newDepth > depths[t.id, default: 0] {
-                        depths[t.id] = newDepth
-                        changed = true
-                    }
-                }
-            }
-        }
-        return depths
-    }
-
     // MARK: - Helpers
 
-    private func abbreviatePath(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path.hasPrefix(home) {
-            return "~" + path.dropFirst(home.count)
-        }
-        return path
-    }
+    private func abbreviatePath(_ path: String) -> String { sidebarAbbreviatePath(path) }
 
     private func permissionBadge(_ mode: String?) -> (label: String, color: Color)? {
-        switch mode {
-        case "bypassPermissions": return ("YOLO", .red)
-        case "plan": return ("PLAN", .blue)
-        default: return nil
-        }
+        sidebarPermissionBadge(mode)
     }
 
     private var statusHeader: some View {
@@ -1344,268 +653,26 @@ struct SidebarView: View {
             .tracking(0.5)
     }
 
-    private func statusColor(_ status: SessionStatus) -> Color {
-        switch status {
-        case .idle: return .gray
-        case .thinking: return Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.95, green: 0.65, blue: 0.15, alpha: 1)
-                : NSColor(red: 0.75, green: 0.45, blue: 0.05, alpha: 1)
-        })
-        case .toolUse: return .blue
-        case .streaming: return .green
-        case .disconnected: return Color(nsColor: .separatorColor)
-        }
-    }
-
-    private func statusLabel(_ status: SessionStatus) -> String {
-        switch status {
-        case .idle: return "Idle"
-        case .thinking: return "Working"
-        case .toolUse: return "Using tool"
-        case .streaming: return "Streaming"
-        case .disconnected: return "Disconnected"
-        }
-    }
-
-    private func contextBarColor(_ fraction: Double) -> Color {
-        if fraction > 0.9 { return .red }
-        if fraction > 0.7 { return .orange }
-        return .blue
-    }
-
-    private func formatTokens(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000.0)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000.0)
-        }
-        return "\(count)"
-    }
-
-    private func formatCost(_ usd: Double) -> String {
-        // Clamp tiny negatives (floating-point noise after a reset) to zero.
-        let v = max(0, usd)
-        if v < 0.01 {
-            return String(format: "$%.4f", v)
-        }
-        return String(format: "$%.2f", v)
-    }
-
-    private func formatDuration(_ ms: Int) -> String {
-        let seconds = max(0, ms) / 1000
-        if seconds < 60 { return "\(seconds)s" }
-        let minutes = seconds / 60
-        let secs = seconds % 60
-        if minutes < 60 { return "\(minutes)m \(secs)s" }
-        let hours = minutes / 60
-        let mins = minutes % 60
-        return "\(hours)h \(mins)m"
-    }
-
-    private func formatLatency(_ ms: Int) -> String {
-        if ms < 1000 { return "\(ms)ms" }
-        return String(format: "%.1fs", Double(ms) / 1000.0)
-    }
-
-    private func latencyColor(_ ms: Int) -> Color {
-        if ms > 10000 { return .red }
-        if ms > 5000 { return .orange }
-        return .green
-    }
-
-    private func toolVerb(_ tool: String) -> String {
-        switch tool {
-        case "Bash": return "Running command"
-        case "Read": return "Reading file"
-        case "Write": return "Writing file"
-        case "Edit": return "Editing file"
-        case "Grep": return "Searching content"
-        case "Glob": return "Finding files"
-        case "Agent": return "Spawning agent"
-        case "WebFetch": return "Fetching URL"
-        case "WebSearch": return "Searching web"
-        case "TaskCreate": return "Creating task"
-        case "TaskUpdate": return "Updating task"
-        case "LSP": return "Code intelligence"
-        case "EnterPlanMode": return "Planning"
-        case "ExitPlanMode": return "Plan ready"
-        case "AskUserQuestion": return "Asking question"
-        default: return "Using tool"
-        }
-    }
-
+    private func statusColor(_ status: SessionStatus) -> Color { sidebarStatusColor(status) }
+    private func statusLabel(_ status: SessionStatus) -> String { sidebarStatusLabel(status) }
+    private func contextBarColor(_ fraction: Double) -> Color { sidebarContextBarColor(fraction) }
+    private func formatTokens(_ count: Int) -> String { sidebarFormatTokens(count) }
+    private func formatCost(_ usd: Double) -> String { sidebarFormatCost(usd) }
+    private func formatDuration(_ ms: Int) -> String { sidebarFormatDuration(ms) }
+    private func formatLatency(_ ms: Int) -> String { sidebarFormatLatency(ms) }
+    private func latencyColor(_ ms: Int) -> Color { sidebarLatencyColor(ms) }
+    private func toolVerb(_ tool: String) -> String { sidebarToolVerb(tool) }
     private func toolDetailLabel(_ tool: String, detail: String) -> String {
-        switch tool {
-        case "Bash":
-            return summarizeBashCommand(detail)
-        case "Read":
-            return "reading \(abbreviateFilePath(detail))"
-        case "Edit":
-            return "editing \(abbreviateFilePath(detail))"
-        case "Write":
-            return abbreviateFilePath(detail)
-        case "Grep":
-            return detail
-        case "Glob":
-            return detail
-        case "Agent":
-            return detail
-        case "WebFetch":
-            if let url = URL(string: detail) {
-                return url.host ?? detail
-            }
-            return detail
-        case "WebSearch":
-            return "\"\(detail)\""
-        case "TaskCreate":
-            return detail
-        case "TaskUpdate":
-            return detail
-        default:
-            return detail
-        }
+        sidebarToolDetailLabel(tool, detail: detail)
     }
-
-    private func toolColor(_ tool: String) -> Color {
-        switch tool {
-        // File / shell / search tools share the same orange treatment so the
-        // user's eye doesn't have to juggle a palette for common operations.
-        case "Bash", "Read", "Edit", "Write", "Grep", "Glob": return .orange
-        case "Agent": return Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor.systemYellow
-                : NSColor(red: 0.6, green: 0.5, blue: 0.0, alpha: 1)
-        })
-        case "WebFetch", "WebSearch": return Color(nsColor: .systemTeal)
-        case "TaskCreate", "TaskUpdate": return .green
-        default: return .blue
-        }
-    }
-
-    private func taskIcon(_ status: String) -> String {
-        switch status {
-        case "completed": return "checkmark.circle.fill"
-        case "in_progress": return "circle.dotted"
-        default: return "circle"
-        }
-    }
-
-    private func taskColor(_ status: String) -> Color {
-        switch status {
-        case "completed": return .green
-        case "in_progress": return .blue
-        default: return Color(nsColor: .tertiaryLabelColor)
-        }
-    }
+    private func toolColor(_ tool: String) -> Color { sidebarToolColor(tool) }
+    private func taskIcon(_ status: String) -> String { sidebarTaskIcon(status) }
+    private func taskColor(_ status: String) -> Color { sidebarTaskColor(status) }
 }
 
 extension Notification.Name {
     static let renameSession = Notification.Name("org.claire.claude-terminal.renameSession")
     static let sessionListDidChange = Notification.Name("org.claire.claude-terminal.sessionListDidChange")
-}
-
-private struct SpinningIcon: View {
-    let systemName: String
-    let color: Color
-    @State private var rotating = false
-
-    var body: some View {
-        Image(systemName: systemName)
-            .font(.system(size: 13))
-            .foregroundColor(color)
-            .rotationEffect(.degrees(rotating ? 360 : 0))
-            .animation(
-                .linear(duration: 1.5).repeatForever(autoreverses: false),
-                value: rotating
-            )
-            .onAppear { rotating = true }
-    }
-}
-
-/// Condense a shell command to just the command names that would run, keeping
-/// the top-level chain operators (`&&`, `||`, `;`). Examples:
-///   `gcc -O2 foo.c -o foo` → `gcc`
-///   `echo hi && date && uptime && ls -la /x | head -5` → `echo && date && uptime && ls`
-///   `bash -c 'make test && git push'` → `make && git push`
-/// Left-hand side of a pipe only; env assignments (`FOO=bar cmd`) stripped.
-/// Falls back to the original string if parsing produces nothing.
-fileprivate func summarizeBashCommand(_ command: String) -> String {
-    let unwrapped = unwrapShellDashC(command) ?? command
-    let parts = splitBashTopLevel(unwrapped)
-    if parts.isEmpty { return command }
-    var out = ""
-    for (i, part) in parts.enumerated() {
-        if i > 0 { out += " \(part.separator) " }
-        out += part.name
-    }
-    return out.isEmpty ? command : out
-}
-
-fileprivate func splitBashTopLevel(_ s: String) -> [(separator: String, name: String)] {
-    var result: [(String, String)] = []
-    var buffer = ""
-    var sep = ""
-    var quote: Character? = nil
-    var paren = 0
-    let chars = Array(s)
-    var i = 0
-
-    func flush() {
-        let name = firstBashCommandToken(buffer)
-        if !name.isEmpty { result.append((sep, name)) }
-        buffer = ""
-    }
-
-    while i < chars.count {
-        let c = chars[i]
-        if let q = quote {
-            buffer.append(c)
-            if c == q { quote = nil }
-            i += 1; continue
-        }
-        if c == "'" || c == "\"" { quote = c; buffer.append(c); i += 1; continue }
-        if c == "(" { paren += 1; buffer.append(c); i += 1; continue }
-        if c == ")" { if paren > 0 { paren -= 1 }; buffer.append(c); i += 1; continue }
-        if paren == 0 {
-            if c == ";" { flush(); sep = ";"; i += 1; continue }
-            if (c == "&" || c == "|") && i + 1 < chars.count && chars[i + 1] == c {
-                flush(); sep = "\(c)\(c)"; i += 2; continue
-            }
-        }
-        buffer.append(c)
-        i += 1
-    }
-    flush()
-    return result
-}
-
-fileprivate func firstBashCommandToken(_ segment: String) -> String {
-    var s = segment.trimmingCharacters(in: .whitespaces)
-    // Strip leading env assignments: FOO=bar.
-    while let m = s.range(of: #"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+"#, options: .regularExpression) {
-        s = String(s[m.upperBound...])
-    }
-    // Keep only the left side of a pipe chain.
-    if let pipe = s.firstIndex(of: "|") {
-        s = String(s[..<pipe]).trimmingCharacters(in: .whitespaces)
-    }
-    return s.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
-}
-
-fileprivate func unwrapShellDashC(_ s: String) -> String? {
-    let prefixes = ["bash -c ", "sh -c ", "zsh -c ", "/bin/bash -c ", "/bin/sh -c "]
-    for p in prefixes where s.hasPrefix(p) {
-        var body = String(s.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
-        if let quote = body.first, quote == "'" || quote == "\"" {
-            body = String(body.dropFirst())
-            if let end = body.lastIndex(of: quote) {
-                body = String(body[..<end])
-            }
-        }
-        return body
-    }
-    return nil
 }
 
 private struct ToolDetailText: View {
@@ -1666,56 +733,6 @@ private struct InstantTooltip: ViewModifier {
                         .zIndex(100)
                 }
             }
-    }
-}
-
-private struct DocumentCardHoverModifier: ViewModifier {
-    @State private var hovered = false
-
-    func body(content: Content) -> some View {
-        content
-            // Disable text selection on the clickable card — the sidebar's
-            // root enables selection for prose, but on tap targets it
-            // steals clicks (drag-to-select beats onTapGesture once started).
-            .textSelection(.disabled)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color(nsColor: .quaternaryLabelColor)
-                        .opacity(hovered ? 0.30 : 0.15))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5)
-                    .stroke(Color(nsColor: .separatorColor),
-                            lineWidth: hovered ? 0.5 : 0)
-            )
-            .shadow(color: Color.black.opacity(hovered ? 0.18 : 0),
-                    radius: hovered ? 4 : 0, x: 0, y: hovered ? 1 : 0)
-            .contentShape(Rectangle())
-            .onHover { isHovered in
-                hovered = isHovered
-                if isHovered {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-    }
-}
-
-private struct PulsingDot: View {
-    let color: Color
-    @State private var pulsing = false
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 6, height: 6)
-            .opacity(pulsing ? 0.3 : 1.0)
-            .animation(
-                .easeInOut(duration: 0.8).repeatForever(autoreverses: true),
-                value: pulsing
-            )
-            .onAppear { pulsing = true }
     }
 }
 
