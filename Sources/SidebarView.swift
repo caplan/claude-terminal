@@ -598,16 +598,6 @@ struct SidebarView: View {
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(Color(nsColor: .secondaryLabelColor))
                 }
-                if let turn = monitor.transcript.lastTurnCost {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Last turn")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        Text(formatCost(turn.total))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(turn.cacheCreate > turn.active ? .orange : Color(nsColor: .secondaryLabelColor))
-                    }
-                }
             }
         }
     }

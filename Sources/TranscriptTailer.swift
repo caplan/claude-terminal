@@ -19,19 +19,12 @@ struct TranscriptSnapshot: Equatable {
     var currentTurnErrorCount: Int
     /// When the current user prompt was submitted, for live elapsed display.
     var currentTurnStart: Date?
-    /// Cost decomposition for the most recent assistant turn (deduped by
-    /// `message.id`).
-    var lastTurnCost: LLMTurnCost?
-    /// Prompt tokens (input + cache_read + cache_creation) for that turn.
+    /// Prompt tokens (input + cache_read + cache_creation) for the most
+    /// recent assistant turn (deduped by `message.id`).
     var lastTurnPromptTokens: Int?
     /// Seconds between the prior assistant turn ending and the user prompt
     /// that triggered this one. >300s correlates with cache-TTL rebuilds.
     var lastTurnIdleSecsBefore: Int?
-    /// Running session totals (deduped by `message.id`).
-    var sessionTotalCost: Double
-    /// Sum of `cacheCreate` across the session — the reclaimable bucket.
-    var sessionReclaimableCost: Double
-    var sessionUniqueRequests: Int
     /// Percentage of token-weighted Read/Edit/Write artifacts loaded this
     /// session that were never referenced by a later turn. nil while the
     /// sample is too small to be meaningful.
@@ -59,12 +52,8 @@ struct TranscriptSnapshot: Equatable {
         lastTurnErrorCount: nil,
         currentTurnErrorCount: 0,
         currentTurnStart: nil,
-        lastTurnCost: nil,
         lastTurnPromptTokens: nil,
         lastTurnIdleSecsBefore: nil,
-        sessionTotalCost: 0,
-        sessionReclaimableCost: 0,
-        sessionUniqueRequests: 0,
         contextUnusedPct: nil,
         contextTrackedTokens: nil,
         contextUnusedTokens: nil,
@@ -371,17 +360,12 @@ final class TranscriptTailer {
         }
 
         if let id = message["id"] as? String,
-           let usage = Self.parseUsage(message["usage"]),
+           let promptTokens = Self.parsePromptTokens(message["usage"]),
            !seenMessageIds.contains(id) {
             seenMessageIds.insert(id)
-            let cost = LLMPricing.turnCost(usage)
-            snapshot.lastTurnCost = cost
-            snapshot.lastTurnPromptTokens = usage.promptTokens
+            snapshot.lastTurnPromptTokens = promptTokens
             snapshot.lastTurnIdleSecsBefore = pendingIdleSecs
             pendingIdleSecs = nil
-            snapshot.sessionTotalCost += cost.total
-            snapshot.sessionReclaimableCost += cost.cacheCreate
-            snapshot.sessionUniqueRequests += 1
 
             assistantTurnCounter += 1
             // Scan this request's text + tool_use args for references to
@@ -458,23 +442,22 @@ final class TranscriptTailer {
         return isoFormatter.date(from: s)
     }
 
-    private static func parseUsage(_ raw: Any?) -> LLMUsage? {
+    /// Returns prompt tokens (input + cache_read + cache_creation) from a
+    /// `message.usage` dict. nil for synthetic rows where everything is zero.
+    private static func parsePromptTokens(_ raw: Any?) -> Int? {
         guard let dict = raw as? [String: Any] else { return nil }
         func intVal(_ key: String) -> Int {
             if let i = dict[key] as? Int { return i }
             if let d = dict[key] as? Double { return Int(d) }
             return 0
         }
-        let usage = LLMUsage(
-            inputTokens: intVal("input_tokens"),
-            cacheReadTokens: intVal("cache_read_input_tokens"),
-            cacheCreationTokens: intVal("cache_creation_input_tokens"),
-            outputTokens: intVal("output_tokens")
-        )
-        // Skip fully-empty usage rows (e.g., synthetic entries) — they'd
-        // pollute the unique-request counter.
-        if usage.promptTokens == 0 && usage.outputTokens == 0 { return nil }
-        return usage
+        let input = intVal("input_tokens")
+        let cacheRead = intVal("cache_read_input_tokens")
+        let cacheCreation = intVal("cache_creation_input_tokens")
+        let output = intVal("output_tokens")
+        let prompt = input + cacheRead + cacheCreation
+        if prompt == 0 && output == 0 { return nil }
+        return prompt
     }
 
     /// New user prompt: clear the assistant trace, start the live turn clock,
