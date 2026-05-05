@@ -382,5 +382,18 @@
         length="19774083"
         type="application/x-apple-diskimage" />
     </item>
+    <item>
+      <title>Version 0.41.2</title>
+      <link>https://github.com/caplan/claude-terminal/releases/tag/v0.41.2</link>
+      <sparkle:version>59</sparkle:version>
+      <sparkle:shortVersionString>0.41.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Tue, 05 May 2026 17:21:23 +0000</pubDate>
+      <enclosure
+        url="https://github.com/caplan/claude-terminal/releases/download/v0.41.2/claude-terminal-0.41.2.dmg"
+        sparkle:edSignature="WyB2Yx0ymGkmKVVBEZCmqyePdAMfnKj1epzN+CfqfnAqmi9VTRkr2JTlIcVqI8CdX/Dx8L9KHMkl9pCC8Pb/Cg=="
+        length="19775186"
+        type="application/x-apple-diskimage" />
+    </item>
   </channel>
 </rss>
