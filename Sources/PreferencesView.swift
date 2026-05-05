@@ -35,6 +35,7 @@ struct PreferencesView: View {
     @State private var appearanceMode: AppearanceMode
     @State private var menuBarIconVisible: Bool
     @State private var menuBarTrigger: String
+    @State private var contextWasteWindowTurns: Int
 
     private let catalog = ThemeCatalog.shared
 
@@ -59,6 +60,8 @@ struct PreferencesView: View {
         _appearanceMode = State(initialValue: AppearanceMode.current())
         _menuBarIconVisible = State(initialValue: UserDefaults.standard.object(forKey: "menuBarIconVisible") as? Bool ?? true)
         _menuBarTrigger = State(initialValue: UserDefaults.standard.string(forKey: "menuBarTrigger") ?? "hover")
+        let storedWindow = UserDefaults.standard.integer(forKey: "contextWasteWindowTurns")
+        _contextWasteWindowTurns = State(initialValue: storedWindow > 0 ? storedWindow : ContextWasteTracker.defaultWindowTurns)
     }
 
     private static func colorFromHex(_ hex: String) -> Color? {
@@ -146,6 +149,26 @@ struct PreferencesView: View {
                         Self.writeNotificationFlag(notificationsEnabled)
                     }
                 Text("Sends a macOS notification when Claude is waiting for permission approval or asks a question.")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            }
+
+            Section("Context waste") {
+                HStack {
+                    Text("Recency window")
+                    Spacer()
+                    TextField("", value: $contextWasteWindowTurns, format: .number)
+                        .frame(width: 40)
+                        .multilineTextAlignment(.trailing)
+                    Stepper("", value: $contextWasteWindowTurns, in: 3...50, step: 1)
+                        .labelsHidden()
+                    Text("turns")
+                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                }
+                .onChange(of: contextWasteWindowTurns) { _ in
+                    UserDefaults.standard.set(contextWasteWindowTurns, forKey: "contextWasteWindowTurns")
+                }
+                Text("How many recent assistant turns count toward the waste calculation. Smaller = more responsive to topic shifts; larger = more stable signal.")
                     .font(.system(size: 11))
                     .foregroundColor(Color(nsColor: .secondaryLabelColor))
             }

@@ -13,6 +13,10 @@ struct SidebarView: View {
     /// down, so the user can glance up from the terminal and still see what
     /// Claude last said.
     @State private var idleAt: Date?
+    /// Drives the instant tooltip on the context bar. .help() uses the
+    /// system tooltip, which has a ~1s delay; .onHover into a SwiftUI
+    /// overlay shows immediately.
+    @State private var contextBarHovering = false
     /// User toggle for the Documents section. Defaults to expanded; persisted
     /// in UserDefaults so it survives relaunches and is shared across windows
     /// (one global preference, not per-session — matches sidebar visibility).
@@ -472,7 +476,31 @@ struct SidebarView: View {
     }
 
     private func contextSection(_ ctx: ContextUsage) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let snap = monitor.transcript
+        let unusedPct = snap.contextUnusedPct ?? 0
+        let usedFrac = min(ctx.fractionUsed, 1.0)
+        let wastedFrac = usedFrac * Double(unusedPct) / 100.0
+        let inCtxTokens = snap.lastTurnPromptTokens
+            ?? Int(Double(ctx.contextWindowSize) * usedFrac)
+        let deadTokens = snap.contextUnusedTokens ?? 0
+        let trackedTokens = snap.contextTrackedTokens ?? 0
+        let tooltip: String = {
+            let lead = "\(formatTokens(inCtxTokens)) tokens in context"
+            guard deadTokens > 0, trackedTokens > 0 else { return lead }
+            let windowKey = UserDefaults.standard.integer(forKey: "contextWasteWindowTurns")
+            let windowTurns = windowKey > 0 ? windowKey : ContextWasteTracker.defaultWindowTurns
+            var msg = "\(lead). In the last \(windowTurns) turns, of \(formatTokens(trackedTokens)) tracked tokens, \(formatTokens(deadTokens)) were never re-referenced."
+            let dead = snap.contextDeadArtifacts
+            if !dead.isEmpty {
+                msg += "\n\nTop dead artifacts:"
+                for d in dead {
+                    let label = d.tool.isEmpty ? d.key : "\(d.key)  (\(d.tool))"
+                    msg += "\n  \(formatTokens(d.estTokens).padding(toLength: 6, withPad: " ", startingAt: 0))  \(label)"
+                }
+            }
+            return msg
+        }()
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 sectionHeader("Context")
                 Spacer()
@@ -481,16 +509,38 @@ struct SidebarView: View {
                     .foregroundColor(contextBarColor(ctx.fractionUsed))
             }
             GeometryReader { geo in
+                let totalW = geo.size.width * usedFrac
+                // Floor orange at 3px when waste >0 so a 2% sliver isn't
+                // sub-pixel. Take it out of the blue half so the total bar
+                // still equals usedFrac * geo.width.
+                let rawOrange = geo.size.width * wastedFrac
+                let orangeW = (wastedFrac > 0) ? max(rawOrange, min(3, totalW)) : 0
+                let blueW = max(0, totalW - orangeW)
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
                         .fill(Color(nsColor: .separatorColor))
                         .frame(height: 6)
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(contextBarColor(ctx.fractionUsed))
-                        .frame(width: geo.size.width * min(ctx.fractionUsed, 1.0), height: 6)
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(Color.blue)
+                            .frame(width: blueW, height: 6)
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: orangeW, height: 6)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
             }
             .frame(height: 6)
+            .contentShape(Rectangle())
+            .onHover { isIn in
+                contextBarHovering = isIn
+                if isIn {
+                    TooltipWindow.shared.show(text: tooltip, anchor: NSEvent.mouseLocation)
+                } else {
+                    TooltipWindow.shared.hide()
+                }
+            }
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("In")
@@ -547,6 +597,16 @@ struct SidebarView: View {
                     Text(formatDuration(cost.totalApiDurationMs))
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                }
+                if let turn = monitor.transcript.lastTurnCost {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Last turn")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                        Text(formatCost(turn.total))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(turn.cacheCreate > turn.active ? .orange : Color(nsColor: .secondaryLabelColor))
+                    }
                 }
             }
         }

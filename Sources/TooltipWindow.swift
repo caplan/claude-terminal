@@ -5,11 +5,22 @@ final class TooltipWindow {
     static let shared = TooltipWindow()
     private var panel: NSPanel?
 
+    func show(text: String, anchor: NSPoint) {
+        let content = PlainTooltipView(text: text)
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.setFrameSize(hostingView.fittingSize)
+        present(hostingView: hostingView, anchor: anchor)
+    }
+
     func show(name: String, directory: String, anchor: NSPoint) {
         let content = TooltipView(name: name, directory: directory)
         let hostingView = NSHostingView(rootView: content)
         hostingView.setFrameSize(hostingView.fittingSize)
-        let size = hostingView.fittingSize
+        present(hostingView: hostingView, anchor: anchor)
+    }
+
+    private func present(hostingView: NSView, anchor: NSPoint) {
+        let size = hostingView.frame.size
 
         let existing = panel ?? {
             let p = NSPanel(
@@ -46,6 +57,27 @@ final class TooltipWindow {
 
     func hide() {
         panel?.orderOut(nil)
+    }
+}
+
+private struct PlainTooltipView: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundColor(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: .windowBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            )
+            .fixedSize()
     }
 }
 
