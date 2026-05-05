@@ -254,7 +254,16 @@ struct SidebarView: View {
                     .foregroundColor(githubStatusColor(indicator))
             }
             .buttonStyle(.plain)
-            .modifier(InstantTooltip(text: tooltip))
+            // Render the hover tooltip in its own NSPanel (via TooltipWindow)
+            // so it lives outside the sidebar's vibrancy material — otherwise
+            // SwiftUI overlays composite against the vibrancy and bleed.
+            .onHover { isIn in
+                if isIn {
+                    TooltipWindow.shared.show(text: tooltip, anchor: NSEvent.mouseLocation)
+                } else {
+                    TooltipWindow.shared.hide()
+                }
+            }
         }
     }
 
@@ -737,52 +746,6 @@ private struct ToolDetailText: View {
             .lineLimit(4)
             .truncationMode(.middle)
             .help(rawDetail)
-    }
-}
-
-/// Hover affordance for document cards — swaps the cursor from the i-beam
-/// (caused by the sidebar-wide `.textSelection(.enabled)`) to a pointing
-/// hand, and lifts the card with a brighter background + subtle drop
-/// shadow so it visibly reads as clickable.
-/// Zero-delay tooltip — the AppKit `.help()` modifier has a built-in
-/// ~1-2s delay that isn't configurable. This shows a small popover-style
-/// label as soon as the pointer enters the view, anchored below it.
-private struct InstantTooltip: ViewModifier {
-    let text: String
-    @State private var hovered = false
-
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovered = $0 }
-            .overlay(alignment: .topLeading) {
-                if hovered, !text.isEmpty {
-                    Text(text)
-                        .font(.system(size: 11))
-                        .foregroundColor(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        // Use `textBackgroundColor` (flat opaque white /
-                        // near-black) instead of `windowBackgroundColor` —
-                        // the latter can render semi-translucently on top
-                        // of the sidebar's vibrancy material, letting
-                        // content behind the window bleed into the
-                        // tooltip as ghost text.
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color(nsColor: .textBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                        )
-                        .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
-                        .fixedSize()
-                        .offset(x: 0, y: 22)
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                        .zIndex(100)
-                }
-            }
     }
 }
 
