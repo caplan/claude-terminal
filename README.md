@@ -89,6 +89,12 @@ If the app is already running, the CLI opens a new window in the same process.
 
 `claude-terminal` menu → **Uninstall Claude Terminal…** removes the app from `/Applications`, deletes `~/.claude-terminal/`, strips the claude-terminal hook + statusLine entries from `~/.claude/settings.json`, removes the CLI symlink, and clears app preferences.
 
+If you already dragged the app to Trash without using the menu, the Claude Code hook entries are still in `~/.claude/settings.json` pointing at a missing binary. Run the standalone uninstaller the app drops on every launch:
+
+```bash
+bash ~/.claude-terminal/uninstall.sh
+```
+
 ## Contributing
 
 Source layout, build instructions, release process, and architecture notes live under [docs/](./docs/) and [CONTRIBUTING.md](./CONTRIBUTING.md).

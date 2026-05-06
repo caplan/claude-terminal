@@ -153,56 +153,113 @@ extension AppDelegate {
 
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
+        var failures: [String] = []
 
-        try? fm.removeItem(atPath: "\(home)/.claude-terminal")
-        removeClaudeTerminalSymlinks(home: home, fm: fm)
-        scrubClaudeSettingsJSON(path: "\(home)/.claude/settings.json", fm: fm)
-        UserDefaults.standard.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "org.claire.claude-terminal")
-        if let appPath = Bundle.main.bundlePath as String? {
-            try? FileManager.default.removeItem(atPath: appPath)
+        if !scrubClaudeSettingsJSON() {
+            failures.append("~/.claude/settings.json could not be cleaned — open it manually and remove any command containing 'claude-terminal'.")
         }
-        NSApp.terminate(nil)
+        if !removeClaudeTerminalSymlinks(home: home, fm: fm) {
+            failures.append("~/.local/bin/claude-terminal could not be removed.")
+        }
+        // Session data cleanup happens last so the standalone uninstall
+        // script (written at ~/.claude-terminal/uninstall.sh) stays around
+        // as a fallback if something upstream failed.
+        do {
+            if fm.fileExists(atPath: "\(home)/.claude-terminal") {
+                try fm.removeItem(atPath: "\(home)/.claude-terminal")
+            }
+        } catch {
+            failures.append("~/.claude-terminal/ could not be removed: \(error.localizedDescription)")
+        }
+        UserDefaults.standard.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "org.claire.claude-terminal")
+
+        let appPath = Bundle.main.bundlePath
+        var appDeleted = false
+        do {
+            try fm.removeItem(atPath: appPath)
+            appDeleted = true
+        } catch {
+            failures.append("\(appPath) could not be removed — drag it to Trash manually. (\(error.localizedDescription))")
+        }
+
+        if failures.isEmpty {
+            NSApp.terminate(nil)
+            return
+        }
+
+        let result = NSAlert()
+        result.messageText = appDeleted ? "Uninstall mostly complete" : "Uninstall incomplete"
+        result.informativeText = failures.joined(separator: "\n\n")
+        result.alertStyle = .warning
+        result.addButton(withTitle: appDeleted ? "Quit" : "OK")
+        if !appDeleted {
+            result.addButton(withTitle: "Quit anyway")
+        }
+        let response = result.runModal()
+        if appDeleted || response == .alertSecondButtonReturn {
+            NSApp.terminate(nil)
+        }
     }
 
-    private func removeClaudeTerminalSymlinks(home: String, fm: FileManager) {
-        try? fm.removeItem(atPath: "\(home)/.local/bin/claude-terminal")
+    /// Removes the CLI symlink. Returns false only if a path that exists
+    /// couldn't be removed — a missing symlink is success.
+    @discardableResult
+    private func removeClaudeTerminalSymlinks(home: String, fm: FileManager) -> Bool {
+        var ok = true
+        let primary = "\(home)/.local/bin/claude-terminal"
+        if (try? fm.destinationOfSymbolicLink(atPath: primary)) != nil || fm.fileExists(atPath: primary) {
+            do {
+                try fm.removeItem(atPath: primary)
+            } catch {
+                ok = false
+            }
+        }
         // Clean up legacy /usr/local/bin symlink if it points at our app.
         let legacy = "/usr/local/bin/claude-terminal"
         if let dest = try? fm.destinationOfSymbolicLink(atPath: legacy),
            dest.contains("claude-terminal.app") {
             try? fm.removeItem(atPath: legacy)
         }
+        return ok
     }
 
     /// Removes any hooks entry whose command mentions "claude-terminal" and
-    /// drops the top-level statusLine if it points at our binary. Writes the
-    /// file back atomically only when something actually changed (well, when
-    /// JSONSerialization succeeds — small wasted write on no-op is harmless).
-    private func scrubClaudeSettingsJSON(path: String, fm: FileManager) {
-        guard let data = fm.contents(atPath: path),
-              var settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
+    /// drops the top-level statusLine if it points at our binary. Returns
+    /// true if the file was cleaned (or already clean); false if it was
+    /// unparseable and still contains claude-terminal references.
+    @discardableResult
+    private func scrubClaudeSettingsJSON() -> Bool {
+        let fm = FileManager.default
+        // If the file doesn't exist, there's nothing to scrub — succeed.
+        if !fm.fileExists(atPath: ClaudeSettings.path.path) { return true }
+
+        // If the file is present but unparseable, flag failure — we'd
+        // rather tell the user than silently leave stale hooks behind.
+        guard let data = fm.contents(atPath: ClaudeSettings.path.path),
+              (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil else {
+            return false
         }
-        if var hooks = settings["hooks"] as? [String: Any] {
-            for (event, value) in hooks {
-                guard var entries = value as? [[String: Any]] else { continue }
-                entries.removeAll { entry in
-                    if let hookList = entry["hooks"] as? [[String: Any]] {
-                        return hookList.contains { ($0["command"] as? String)?.contains("claude-terminal") == true }
+
+        ClaudeSettings.mutate { settings in
+            if var hooks = settings["hooks"] as? [String: Any] {
+                for (event, value) in hooks {
+                    guard var entries = value as? [[String: Any]] else { continue }
+                    entries.removeAll { entry in
+                        if let hookList = entry["hooks"] as? [[String: Any]] {
+                            return hookList.contains { ($0["command"] as? String)?.contains("claude-terminal") == true }
+                        }
+                        return (entry["command"] as? String)?.contains("claude-terminal") == true
                     }
-                    return (entry["command"] as? String)?.contains("claude-terminal") == true
+                    hooks[event] = entries.isEmpty ? nil : entries
                 }
-                hooks[event] = entries.isEmpty ? nil : entries
+                settings["hooks"] = hooks.isEmpty ? nil : hooks
             }
-            settings["hooks"] = hooks.isEmpty ? nil : hooks
+            if let sl = settings["statusLine"] as? [String: Any],
+               (sl["command"] as? String)?.contains("claude-terminal") == true {
+                settings.removeValue(forKey: "statusLine")
+            }
         }
-        if let sl = settings["statusLine"] as? [String: Any],
-           (sl["command"] as? String)?.contains("claude-terminal") == true {
-            settings.removeValue(forKey: "statusLine")
-        }
-        if let cleaned = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-            try? cleaned.write(to: URL(fileURLWithPath: path), options: .atomic)
-        }
+        return true
     }
 
     @objc func toggleSidebar() {

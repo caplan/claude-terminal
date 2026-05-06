@@ -116,7 +116,7 @@ Resources/
 scripts/
   release.sh              — notarize + sign + ship
   ensure-ghosttykit.sh    — download pinned GhosttyKit.xcframework
-  uninstall.sh            — user-invokable uninstaller
+  uninstall.sh            — user-invokable uninstaller (kept in sync with Sources/StandaloneUninstallScript.swift, which the app writes to ~/.claude-terminal/uninstall.sh on launch as a drag-to-Trash fallback)
 project.yml               — XcodeGen project config
 appcast.xml               — Sparkle feed
 ```

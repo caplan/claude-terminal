@@ -3,8 +3,6 @@ import Foundation
 enum HookInstaller {
     private static let hookDirLegacy = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude-terminal/hooks")
-    private static let claudeSettingsPath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/settings.json")
 
     /// Absolute path to the claude-terminal-hook executable inside the app bundle.
     /// Claude Code hooks invoke this via the command field in ~/.claude/settings.json.
@@ -17,6 +15,7 @@ enum HookInstaller {
     static func installIfNeeded() {
         removeLegacyPythonScripts()
         configureClaudeSettings()
+        writeStandaloneUninstaller()
     }
 
     /// Older versions of claude-terminal shelled out to Python scripts at
@@ -34,64 +33,45 @@ enum HookInstaller {
     }
 
     private static func configureClaudeSettings() {
-        let fm = FileManager.default
-        let settingsPath = claudeSettingsPath.path
         let helper = helperBinaryPath
-
-        var settings: [String: Any] = [:]
-        if fm.fileExists(atPath: settingsPath),
-           let data = fm.contents(atPath: settingsPath),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            settings = parsed
-        }
-
         let hookCommand = "\"\(helper)\" hook"
         let statusLineCommand = "\"\(helper)\" statusline"
         let desiredHooks = buildDesiredHooks(command: hookCommand)
 
-        var existingHooks = settings["hooks"] as? [String: Any] ?? [:]
-        var changed = false
+        ClaudeSettings.mutate { settings in
+            var existingHooks = settings["hooks"] as? [String: Any] ?? [:]
 
-        for (eventName, hookConfigs) in desiredHooks {
-            // Replace any prior claude-terminal entries (old Python script or older binary path).
-            let existingEntries = existingHooks[eventName] as? [[String: Any]] ?? []
-            let filtered = existingEntries.filter { entry in
-                if let hooks = entry["hooks"] as? [[String: Any]] {
-                    return !hooks.contains { ($0["command"] as? String)?.contains("claude-terminal") == true }
-                }
-                if let cmd = entry["command"] as? String {
-                    return !cmd.contains("claude-terminal")
-                }
-                return true
+            // Strip stale claude-terminal entries from EVERY event, not just
+            // the ones we still install into. This cleans up orphans left
+            // behind when the set of desired events changes between versions
+            // (e.g. a future release removes Notification).
+            for (eventName, value) in existingHooks {
+                guard var entries = value as? [[String: Any]] else { continue }
+                entries.removeAll { entryReferencesClaudeTerminal($0) }
+                existingHooks[eventName] = entries.isEmpty ? nil : entries
             }
-            var updated = filtered
-            updated.append(contentsOf: hookConfigs)
-            if (updated as NSArray) != (existingEntries as NSArray) {
-                existingHooks[eventName] = updated
-                changed = true
-            }
-        }
 
-        let existingStatusLine = settings["statusLine"] as? [String: Any]
-        let currentStatusLineCmd = (existingStatusLine?["command"] as? String) ?? ""
-        if currentStatusLineCmd != statusLineCommand {
+            // Install the current helper into desired events.
+            for (eventName, hookConfigs) in desiredHooks {
+                var entries = existingHooks[eventName] as? [[String: Any]] ?? []
+                entries.append(contentsOf: hookConfigs)
+                existingHooks[eventName] = entries
+            }
+
+            settings["hooks"] = existingHooks.isEmpty ? nil : existingHooks
             settings["statusLine"] = [
                 "type": "command",
                 "command": statusLineCommand,
                 "refreshInterval": 3,
             ] as [String: Any]
-            changed = true
         }
+    }
 
-        if changed {
-            settings["hooks"] = existingHooks
-            if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-                let dir = (settingsPath as NSString).deletingLastPathComponent
-                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                try? data.write(to: claudeSettingsPath, options: .atomic)
-                print("[claude-terminal] Configured Claude Code hooks → \(helper)")
-            }
+    private static func entryReferencesClaudeTerminal(_ entry: [String: Any]) -> Bool {
+        if let hookList = entry["hooks"] as? [[String: Any]] {
+            return hookList.contains { ($0["command"] as? String)?.contains("claude-terminal") == true }
         }
+        return (entry["command"] as? String)?.contains("claude-terminal") == true
     }
 
     private static func buildDesiredHooks(command: String) -> [String: [[String: Any]]] {
@@ -114,4 +94,30 @@ enum HookInstaller {
             "Notification": [entry],
         ]
     }
+
+    /// Copy a standalone uninstall script to ~/.claude-terminal/uninstall.sh
+    /// on every launch. This survives drag-to-Trash (the app bundle goes but
+    /// ~/.claude-terminal stays), giving users a recovery path for cleaning
+    /// Claude Code hooks + preferences without the app binary. Written
+    /// idempotently — same content each time, no thrash.
+    private static func writeStandaloneUninstaller() {
+        let fm = FileManager.default
+        let dir = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude-terminal").path
+        let scriptPath = "\(dir)/uninstall.sh"
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        let content = StandaloneUninstallScript.content
+        if let existing = try? String(contentsOfFile: scriptPath, encoding: .utf8),
+           existing == content {
+            return
+        }
+        do {
+            try content.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+            // chmod +x — FileManager.setAttributes with posixPermissions.
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+        } catch {
+            print("[claude-terminal] Failed to write standalone uninstaller: \(error)")
+        }
+    }
 }
+
