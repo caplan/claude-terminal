@@ -1,4 +1,0 @@
-# Pinned GhosttyKit.xcframework.tar.gz checksums keyed by ghostty SHA.
-# Sourced from the manaflow-ai/ghostty release pipeline.
-# Format: <ghostty_sha> <sha256>
-3b684a085d40ec79e8a0ae863a4f2b48ed4dba74 1d408a5ba5e7996b21a4f3346adbc971c47f3ccf7e440bd334ac5389cd2f11c8
