@@ -174,6 +174,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dir = queryItems.first(where: { $0.name == "dir" })?.value
         var claudeOptions = queryItems.first(where: { $0.name == "claude-options" })?.value
 
+        let rawPrefs = queryItems.compactMap { $0.name == "pref" ? $0.value : nil }
+        if !rawPrefs.isEmpty, let parsed = PrefOverrides.parse(rawPrefs) {
+            PrefOverrides.install(parsed)
+        }
+
         if let dir {
             let name = (dir as NSString).lastPathComponent
             let nameOpt = "--name \"\(name)\""

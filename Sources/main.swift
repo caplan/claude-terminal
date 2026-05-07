@@ -4,6 +4,7 @@ struct CLIArguments {
     var workingDirectory: String?
     var name: String?
     var claudePassthrough: [String] = []
+    var prefOverrides: [String] = []
 
     var claudeOptions: String? {
         var parts: [String] = []
@@ -31,8 +32,16 @@ func parseCLIArguments() -> CLIArguments? {
             Usage: claude-terminal [options] [directory] [-- claude-args...]
 
             Options:
-              --name <name>    Session name
-              -h, --help       Show this help
+              --name <name>           Session name
+              --pref <key>=<value>    Override a preference for this run only (repeatable).
+                                      Not written to saved prefs. Supported keys:
+                                        appearanceMode          System | Light | Dark
+                                        sidebarDefaultVisible   true | false
+                                        notificationsEnabled    true | false
+                                        menuBarIconVisible      true | false
+                                        menuBarTrigger          hover | click
+                                        contextWasteWindowTurns <integer>
+              -h, --help              Show this help
 
             Arguments after -- are passed directly to the Claude CLI.
             """
@@ -41,6 +50,9 @@ func parseCLIArguments() -> CLIArguments? {
         case "--name":
             i += 1
             if i < args.count { result.name = args[i] }
+        case "--pref":
+            i += 1
+            if i < args.count { result.prefOverrides.append(args[i]) }
         default:
             if !arg.hasPrefix("-") {
                 var path = arg
@@ -57,6 +69,14 @@ func parseCLIArguments() -> CLIArguments? {
 
 let cliArgs = parseCLIArguments()
 
+// Validate --pref entries up front so both launch paths bail on bad input
+// before the app starts or sends a URL.
+let parsedOverrides: [String: Any]? = {
+    guard let raw = cliArgs?.prefOverrides, !raw.isEmpty else { return nil }
+    guard let parsed = PrefOverrides.parse(raw) else { exit(2) }
+    return parsed
+}()
+
 // If the app is already running, send it a URL to open a new window and exit
 let bundleId = Bundle.main.bundleIdentifier ?? "org.claire.claude-terminal"
 if NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).contains(where: { $0 != .current }) {
@@ -69,6 +89,9 @@ if NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).cont
     if let opts = cliArgs?.claudeOptions {
         queryItems.append(URLQueryItem(name: "claude-options", value: opts))
     }
+    for entry in cliArgs?.prefOverrides ?? [] {
+        queryItems.append(URLQueryItem(name: "pref", value: entry))
+    }
     components.queryItems = queryItems
     if let url = components.url {
         let proc = Process()
@@ -79,6 +102,10 @@ if NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).cont
     }
     exit(0)
 }
+
+// Fresh launch: install overrides into NSArgumentDomain before AppDelegate
+// reads any preference.
+if let parsedOverrides { PrefOverrides.install(parsedOverrides) }
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
