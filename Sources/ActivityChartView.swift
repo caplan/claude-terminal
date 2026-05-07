@@ -189,17 +189,17 @@ struct ActivityChartView: View {
         )
     }
 
-    /// Streak duration → color ramp. The gradient peaks at 120 seconds of
+    /// Streak duration → color ramp. The gradient peaks at 20 minutes of
     /// continuous busy: light blue → deep blue → green → orange → red.
     /// Stops are interpolated linearly in RGB.
     private static let intensityStops: [(Double, UInt32)] = [
-        (0.00, 0xBFDCFF),  //   0s — light blue (idle)
-        (0.22, 0x0B3A99),  //  26s — deep blue
-        (0.48, 0x166534),  //  58s — green
-        (0.78, 0xFF8A1F),  //  94s — orange
-        (1.00, 0xDC2626),  // 120s+ — red
+        (0.00, 0xBFDCFF),  //     0s — light blue (idle)
+        (0.22, 0x0B3A99),  //   264s — deep blue
+        (0.48, 0x166534),  //   576s — green
+        (0.78, 0xFF8A1F),  //   936s — orange
+        (1.00, 0xDC2626),  //  1200s+ — red
     ]
-    private static let intensityMaxSecs: Double = 1800
+    private static let intensityMaxSecs: Double = 1200
 
     private static let debugLogPath: String = {
         let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude-terminal")
