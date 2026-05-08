@@ -102,6 +102,14 @@ extension AppDelegate {
         let savedBg = window.backgroundColor
         let savedOpaque = window.isOpaque
 
+        // Suppress the KVO reapply while our own apply cascade runs. Without
+        // this, the CONFIG_CHANGE handler repaints the layer with a color
+        // that is semantically identical but not bit-identical to our CGColor
+        // (alpha + color-space normalization), which the observer reads as
+        // "diverged" and loops on ghostty_surface_update_config's internal
+        // lock until the process hangs.
+        terminalBackgroundApplyInProgress.insert(windowId)
+
         surfaceView.backgroundColor = color
         surfaceView.applySurfaceBackground()
 
@@ -115,11 +123,13 @@ extension AppDelegate {
         // Ghostty's CONFIG_CHANGE handler fires on the next main-loop tick
         // and calls applyWindowBackgroundIfActive(), which tints the chrome.
         // We only want the terminal content to change — restore chrome
-        // after that handler has run.
+        // after that handler has run, then lift the suppression so a real
+        // post-/clear divergence can still be re-applied.
         DispatchQueue.main.async {
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 window.backgroundColor = savedBg
                 window.isOpaque = savedOpaque
+                self?.terminalBackgroundApplyInProgress.remove(windowId)
             }
         }
 
@@ -177,6 +187,7 @@ extension AppDelegate {
     }
 
     private func reapplyTerminalBackgroundIfDiverged(windowId: UUID) {
+        guard !terminalBackgroundApplyInProgress.contains(windowId) else { return }
         guard let color = customTerminalBackgrounds[windowId],
               let window = windows[windowId],
               let hosted = TerminalSurfaceRegistry.shared.allSurfaces()

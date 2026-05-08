@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var windowConfigs: [UUID: WindowConfig] = [:]
     var customTerminalBackgrounds: [UUID: NSColor] = [:]
     var terminalBackgroundObservations: [UUID: NSKeyValueObservation] = [:]
+    var terminalBackgroundApplyInProgress: Set<UUID> = []
     var colorPanelWindowId: UUID?
     var windowMenu: NSMenu?
     var launchedViaURL = false
