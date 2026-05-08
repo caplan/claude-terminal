@@ -11,6 +11,7 @@ struct SessionEntry: Identifiable {
     let costUsd: Double?
     let lastUpdate: Date
     let isActive: Bool
+    var customBackground: NSColor? = nil
 }
 
 final class SessionListViewModel: ObservableObject {
@@ -84,7 +85,8 @@ final class SessionListViewModel: ObservableObject {
                 conversationTurns: state.conversationTurns,
                 costUsd: state.cost?.totalCostUsd,
                 lastUpdate: Date(),
-                isActive: true
+                isActive: true,
+                customBackground: AppDelegate.shared?.customTerminalBackgrounds[windowId]
             )
         }
     }

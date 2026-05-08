@@ -89,6 +89,9 @@ private struct SessionCard: View {
     private static let cardHeight: CGFloat = 110
 
     private var cardBackground: Color {
+        if let custom = session.customBackground {
+            return Color(nsColor: custom.withAlphaComponent(session.isActive ? 0.85 : 0.55))
+        }
         if let dominant = FaviconLoader.dominantColor(for: session.workingDirectory) {
             var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             dominant.getHue(&h, saturation: &s, brightness: &b, alpha: &a)

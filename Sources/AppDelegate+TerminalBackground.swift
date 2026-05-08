@@ -52,6 +52,7 @@ extension AppDelegate {
             colorPanelWindowId = nil
         }
         resetTerminalBackground(windowId: windowId)
+        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
     }
 
     @objc func colorPanelDidChange(_ sender: Any?) {
@@ -109,6 +110,7 @@ extension AppDelegate {
         // "diverged" and loops on ghostty_surface_update_config's internal
         // lock until the process hangs.
         terminalBackgroundApplyInProgress.insert(windowId)
+        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
 
         surfaceView.backgroundColor = color
         surfaceView.applySurfaceBackground()
