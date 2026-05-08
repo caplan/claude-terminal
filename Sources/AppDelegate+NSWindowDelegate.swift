@@ -12,6 +12,11 @@ extension AppDelegate: NSWindowDelegate {
             sessionMonitors.removeValue(forKey: windowId)
             documentTabStates.removeValue(forKey: windowId)
             windowConfigs.removeValue(forKey: windowId)
+            customTerminalBackgrounds.removeValue(forKey: windowId)
+            terminalBackgroundObservations.removeValue(forKey: windowId)?.invalidate()
+            if colorPanelWindowId == windowId {
+                colorPanelWindowId = nil
+            }
         }
         windows = windows.filter { $0.value !== closingWindow }
         tabManagers = tabManagers.filter { $0.value.window !== closingWindow }

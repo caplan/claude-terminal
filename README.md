@@ -66,6 +66,7 @@ Image tabs support ⌘-scroll zoom and drag-to-pan. They auto-reload on save, so
 - Switch between open windows with the **Window** menu or `Cmd+1` … `Cmd+9`.
 - The **menu-bar icon** pops up a grid of all sessions (active and recently used). Click any tile to focus or reopen. You can set the trigger to hover or click, and hide the icon entirely, in **Settings → Menu Bar**.
 - `Cmd+Shift+R` renames the current session — helpful when `~/projects/foo` isn't descriptive enough.
+- **Right-click the terminal** → **Set Terminal Background Color…** to tint a session for visual distinction at a glance. The tint is per-window and sticks across `/clear`. Pick **Remove Custom Background** to revert.
 
 ## Saving and resuming work
 

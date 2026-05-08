@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var sessionMonitors: [UUID: SessionMonitor] = [:]
     var documentTabStates: [UUID: DocumentTabState] = [:]
     var windowConfigs: [UUID: WindowConfig] = [:]
+    var customTerminalBackgrounds: [UUID: NSColor] = [:]
+    var terminalBackgroundObservations: [UUID: NSKeyValueObservation] = [:]
+    var colorPanelWindowId: UUID?
     var windowMenu: NSMenu?
     var launchedViaURL = false
     var cliArguments: CLIArguments?
@@ -61,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController()
         menuBarController?.setup()
         NotificationCenter.default.addObserver(self, selector: #selector(renameSession), name: .renameSession, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(reapplyAllTerminalBackgrounds), name: .ghosttyConfigDidReload, object: nil)
         NSApp.activate(ignoringOtherApps: true)
         installCLISymlinkIfNeeded()
         suggestJiraCLIIfNeeded()
@@ -227,12 +231,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             claudeOptions: opts
         )
 
-        let window = NSWindow(
+        let window = ClaudeTerminalWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.windowId = windowId
         window.title = monitor.state.sessionName ?? resolvedName
         window.minSize = NSSize(width: 600, height: 300)
         window.contentMinSize = NSSize(width: 600, height: 300)

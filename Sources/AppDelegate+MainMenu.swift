@@ -65,6 +65,9 @@ extension AppDelegate {
         menu.addItem(withTitle: "Zoom Out", action: #selector(docZoomOut), keyEquivalent: "-")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Rename Session...", action: #selector(renameSession), keyEquivalent: "R")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Terminal Background Color…", action: #selector(chooseTerminalBackgroundFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: "Reset Terminal Background", action: #selector(resetTerminalBackgroundFromMenu), keyEquivalent: "")
         return menu
     }
 

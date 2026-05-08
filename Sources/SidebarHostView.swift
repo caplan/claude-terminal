@@ -41,6 +41,7 @@ struct SidebarDragHandle: View {
             .fill(Color(nsColor: .separatorColor))
             .frame(width: 1)
             .padding(.horizontal, 2)
+            .background(Color(nsColor: .windowBackgroundColor))
             .contentShape(Rectangle())
             .onHover { hovering in
                 if hovering {
