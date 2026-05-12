@@ -197,8 +197,26 @@ extension AppDelegate {
               let bgView = hosted.subviews.first,
               let current = bgView.layer?.backgroundColor
         else { return }
-        if current == color.cgColor { return }
+        if cgColorsVisuallyEqual(current, color.cgColor) { return }
         applyTerminalBackground(windowId: windowId)
+    }
+
+    /// CGColor's `==` is `CGColorEqualToColor`, which requires bit-identical
+    /// components *and* colorspace. Ghostty's CONFIG_CHANGE handler repaints
+    /// the layer with a color that's been round-tripped through a different
+    /// colorspace (and sometimes alpha-normalized), so a reapplied color never
+    /// compares equal to the original and the KVO observer loops. Normalize
+    /// to sRGB and compare components with an 8-bit epsilon.
+    private func cgColorsVisuallyEqual(_ a: CGColor, _ b: CGColor) -> Bool {
+        guard let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
+              let ac = a.converted(to: sRGB, intent: .defaultIntent, options: nil),
+              let bc = b.converted(to: sRGB, intent: .defaultIntent, options: nil),
+              let acs = ac.components, let bcs = bc.components,
+              acs.count == bcs.count
+        else { return false }
+        let epsilon: CGFloat = 1.0 / 512.0
+        for (x, y) in zip(acs, bcs) where abs(x - y) > epsilon { return false }
+        return true
     }
 
     private func resetTerminalBackground(windowId: UUID) {
