@@ -318,6 +318,14 @@ struct SidebarView: View {
                         }
                     }
                     .foregroundColor(.blue)
+                    .contentShape(Rectangle())
+                    .onHover { isHovered in
+                        if isHovered {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
                 }
             }
             if let model = state.modelName {
