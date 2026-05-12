@@ -15,6 +15,7 @@ struct WindowConfig: Codable {
     var sidebarWidth: Double?
     var openDocs: [OpenDocState]?
     var activeDocPath: String?
+    var customBackgroundHex: String?
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

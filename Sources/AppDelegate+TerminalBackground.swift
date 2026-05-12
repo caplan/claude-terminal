@@ -88,6 +88,23 @@ extension AppDelegate {
         }
     }
 
+    /// On launch the Metal surface isn't mounted synchronously — `installWindow`
+    /// returns before `GhosttyNSView` shows up in the view tree. Poll briefly
+    /// and apply the restored color once the surface exists.
+    func scheduleRestoredBackgroundApply(windowId: UUID, attemptsRemaining: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self = self,
+                  self.customTerminalBackgrounds[windowId] != nil,
+                  let window = self.windows[windowId]
+            else { return }
+            if self.findGhosttySurfaceView(in: window) != nil {
+                self.applyTerminalBackground(windowId: windowId)
+            } else if attemptsRemaining > 0 {
+                self.scheduleRestoredBackgroundApply(windowId: windowId, attemptsRemaining: attemptsRemaining - 1)
+            }
+        }
+    }
+
     // MARK: - Surface plumbing
 
     private func applyTerminalBackground(windowId: UUID) {

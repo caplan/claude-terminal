@@ -26,6 +26,7 @@ extension AppDelegate {
                     tabState.tabs.first(where: { $0.id == id })?.path
                 }
             }
+            config.customBackgroundHex = customTerminalBackgrounds[windowId]?.hexString()
             configs.append(config)
         }
         if let data = try? JSONEncoder().encode(configs) {
@@ -42,7 +43,7 @@ extension AppDelegate {
     }
 
     func restoreWindow(config: WindowConfig, claudeOptions: String) {
-        let (_, tabState) = installWindow(
+        let (windowId, tabState) = installWindow(
             workingDirectory: config.workingDirectory,
             claudeOptions: claudeOptions,
             sessionName: config.sessionName,
@@ -50,6 +51,11 @@ extension AppDelegate {
             sidebarWidth: config.sidebarWidth.map { CGFloat($0) },
             storedConfig: config
         )
+
+        if let hex = config.customBackgroundHex, let color = NSColor(hex: hex) {
+            customTerminalBackgrounds[windowId] = color
+            scheduleRestoredBackgroundApply(windowId: windowId, attemptsRemaining: 40)
+        }
 
         // Reopen markdown tabs that were open when the app last quit, and
         // prime the pending-scroll map so the first render of each doc
