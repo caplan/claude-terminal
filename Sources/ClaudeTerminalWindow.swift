@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// NSWindow subclass that owns a windowId and shows the terminal-background
 /// context menu on right-click. Right-clicks on the terminal content are
@@ -26,6 +27,22 @@ final class ClaudeTerminalWindow: NSWindow {
 
     private func isLocationInTerminalContent(_ locationInWindow: NSPoint, contentView: NSView) -> Bool {
         let localPoint = contentView.convert(locationInWindow, from: nil)
-        return contentView.bounds.contains(localPoint)
+        guard contentView.bounds.contains(localPoint) else { return false }
+        // The sidebar lives in its own NSHostingView<SidebarView> alongside
+        // the terminal. Right-clicks that land inside the sidebar should not
+        // trigger the terminal-background menu.
+        if let hit = contentView.hitTest(locationInWindow), isInsideSidebar(hit) {
+            return false
+        }
+        return true
+    }
+
+    private func isInsideSidebar(_ view: NSView) -> Bool {
+        var current: NSView? = view
+        while let v = current {
+            if v is NSHostingView<SidebarView> { return true }
+            current = v.superview
+        }
+        return false
     }
 }
