@@ -91,12 +91,12 @@ struct ActivityChartView: View {
         HStack(spacing: 6) {
             VStack(alignment: .trailing, spacing: 0) {
                 Text("Claude")
-                    .font(.system(size: 9))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
                     .frame(maxHeight: .infinity, alignment: .bottom)
                 Text("Tools")
-                    .font(.system(size: 9))
-                    .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
                     .frame(maxHeight: .infinity, alignment: .top)
             }
             .frame(height: 48)
