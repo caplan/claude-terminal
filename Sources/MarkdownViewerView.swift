@@ -89,8 +89,10 @@ struct MarkdownViewerView: NSViewRepresentable {
             ) else {
                 return
             }
-            let dir = url.deletingLastPathComponent()
-            webView?.loadFileURL(url, allowingReadAccessTo: dir)
+            // Broaden the WebKit read sandbox to `/` so relative image
+            // references in markdown (e.g. `![](docs/foo.png)`) can load
+            // from the user's project tree, not just the bundle.
+            webView?.loadFileURL(url, allowingReadAccessTo: URL(fileURLWithPath: "/"))
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -120,15 +122,21 @@ struct MarkdownViewerView: NSViewRepresentable {
 
         private func evaluateRender(source: String) {
             guard let webView = webView else { return }
+            let baseDir: String
+            if let path = currentPath {
+                baseDir = (path as NSString).deletingLastPathComponent
+            } else {
+                baseDir = ""
+            }
             let encoded: Data
             do {
-                encoded = try JSONSerialization.data(withJSONObject: [source], options: [])
+                encoded = try JSONSerialization.data(withJSONObject: [source, baseDir], options: [])
             } catch {
                 return
             }
             guard let jsonArray = String(data: encoded, encoding: .utf8) else { return }
-            // jsonArray is e.g. ["hello **world**"], pull the first element.
-            let js = "window.render(\(jsonArray)[0]);"
+            // jsonArray is e.g. ["src", "/dir"]; pull both elements.
+            let js = "window.render(\(jsonArray)[0], \(jsonArray)[1]);"
             webView.evaluateJavaScript(js) { [weak self] _, _ in
                 guard let self else { return }
                 guard !self.hasAppliedRestoreScroll else { return }

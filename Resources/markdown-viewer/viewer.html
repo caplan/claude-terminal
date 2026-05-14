@@ -69,12 +69,24 @@
       let pending = null;
       const el = document.getElementById('content');
 
-      window.render = async function (src) {
-        if (!ready) { pending = src; return; }
+      window.render = async function (src, baseDir) {
+        if (!ready) { pending = { src, baseDir }; return; }
         const prevScroll = window.scrollY;
         const html = marked.parse(src || '');
         const safe = DOMPurify.sanitize(html, purifyConfig);
         el.innerHTML = safe;
+
+        // Rewrite relative <img src> to absolute file:// URLs based on
+        // the markdown file's directory. Without this, the browser
+        // resolves them against the harness URL inside the app bundle.
+        if (baseDir) {
+          el.querySelectorAll('img[src]').forEach(function (img) {
+            const raw = img.getAttribute('src') || '';
+            if (!raw) return;
+            if (/^(https?:|file:|data:|blob:|\/)/i.test(raw)) return;
+            img.setAttribute('src', 'file://' + baseDir + '/' + raw);
+          });
+        }
 
         // Assign slugged ids to headings after sanitization so in-document
         // anchor links work. Use a fresh counter each render so ids stay
@@ -214,8 +226,8 @@
       // Signal readiness after libs are defined.
       ready = true;
       if (pending != null) {
-        const src = pending; pending = null;
-        window.render(src);
+        const p = pending; pending = null;
+        window.render(p.src, p.baseDir);
       }
     })();
   </script>
