@@ -4,6 +4,8 @@ A native macOS app for running [Claude Code](https://docs.claude.com/en/docs/cla
 
 Built on [Ghostty](https://ghostty.org)'s terminal engine.
 
+![claude-terminal screenshot](docs/images/screen.png)
+
 ## Install
 
 1. Download `claude-terminal-X.Y.Z.dmg` from the [latest release](../../releases/latest).
