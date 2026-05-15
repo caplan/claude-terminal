@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppearanceMode.current().apply()
         HookInstaller.installIfNeeded()
         Self.pruneStaleFiles()
+        startCrashReporting()
         let notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         PreferencesView.writeNotificationFlag(notificationsEnabled)
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }

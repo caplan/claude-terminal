@@ -28,6 +28,8 @@ extension AppDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings...", action: #selector(openPreferences), keyEquivalent: ",")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Reveal Diagnostics in Finder", action: #selector(revealDiagnostics), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Uninstall Claude Terminal...", action: #selector(uninstallApp), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Claude Terminal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
