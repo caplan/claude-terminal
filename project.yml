@@ -34,8 +34,8 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         PRODUCT_BUNDLE_IDENTIFIER: org.claire.claude-terminal
         PRODUCT_NAME: claude-terminal
-        MARKETING_VERSION: "0.42.8"
-        CURRENT_PROJECT_VERSION: "70"
+        MARKETING_VERSION: "0.42.9"
+        CURRENT_PROJECT_VERSION: "71"
         INFOPLIST_FILE: Resources/Info.plist
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
