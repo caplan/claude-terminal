@@ -30,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var customTerminalBackgrounds: [UUID: NSColor] = [:]
     var terminalBackgroundObservations: [UUID: NSKeyValueObservation] = [:]
     var terminalBackgroundApplyInProgress: Set<UUID> = []
+    // Circuit breaker for the reapply loop. If the KVO-driven
+    // reapply/divergence cycle ever fails to converge (a colorspace
+    // round-trip that defeats `cgColorsVisuallyEqual`), this caps the
+    // damage at a handful of rewrites instead of the multi-GB / 98%-CPU
+    // runaway seen on build 65. Cleared when the user sets/removes a color.
+    var terminalBackgroundReapplyTimestamps: [UUID: [Date]] = [:]
+    var terminalBackgroundReapplyTripped: Set<UUID> = []
     var colorPanelWindowId: UUID?
     var windowMenu: NSMenu?
     var launchedViaURL = false

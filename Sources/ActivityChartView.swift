@@ -34,6 +34,16 @@ struct ActivityChartView: View {
     @State private var prevActiveToolIds: Set<String> = []
     @State private var toolStartedThisWindow: Bool = false
     @State private var toolNamesThisWindow: [String] = []
+    // Wall-clock of the last sub-tick that observed real Claude/tool work.
+    // Drives the freeze gate below: once activity has been gone longer than
+    // a bar's slide duration, the chart has nothing left to animate.
+    @State private var lastActivityAt: Date = .distantPast
+    // When true the chart is visually static: the TimelineView schedule
+    // stops ticking and the 10Hz sub-sampler early-returns without mutating
+    // any @State, so an idle (or churning-but-not-working) session can't
+    // pin the main thread relaying out the hosted SwiftUI tree at 30fps.
+    // Starts frozen — nothing to show until the first activity.
+    @State private var chartFrozen: Bool = true
 
     static let activityWindow = 60
     static let subSampleHz: Double = 10
@@ -101,7 +111,12 @@ struct ActivityChartView: View {
             }
             .frame(height: 48)
             GeometryReader { geo in
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+                // Animate at 30fps only while the chart is live. When frozen
+                // the schedule yields a single frame and stops, so an idle
+                // sidebar costs zero per-frame relayout. A resumed session
+                // republishes `state`, which re-evaluates `body`, recreates
+                // this schedule with `animating: true`, and it ticks again.
+                TimelineView(ActivitySlideSchedule(animating: !chartFrozen)) { ctx in
                     let progress = max(0, min(1, ctx.date.timeIntervalSince(lastSampleTime) / Self.barDurationSecs))
                     let halfH = geo.size.height / 2
                     let columns = Self.activityWindow + 1
@@ -271,7 +286,6 @@ struct ActivityChartView: View {
         // Detecting a positive delta lets us still credit those samples.
         let cumulativeToolMs = state.network?.toolMsTotal ?? 0
         let toolJustFinished = cumulativeToolMs > lastObservedToolMsTotal
-        lastObservedToolMsTotal = cumulativeToolMs
         let toolBusy = !needsInput
             && (!(state.activeTools ?? []).isEmpty
                 || state.status == .toolUse
@@ -283,6 +297,44 @@ struct ActivityChartView: View {
         // sampled as Claude because `status==.thinking` in the same tick.
         let claudeBusy = !needsInput && !toolBusy
             && (state.status == .thinking || state.status == .streaming)
+
+        // ---- Freeze gate ----------------------------------------------
+        // The chart only needs to redraw while something is happening or
+        // while the last burst is still sliding off (≈ barDurationSecs).
+        // Outside that window every tick here would otherwise append a
+        // zero sample, move `lastSampleTime`, and restart a 3s slide —
+        // perpetually relaying out the hosted SwiftUI tree at 30fps even
+        // with the session completely idle. That feedback loop is the
+        // root cause of the CPU-resource exception / unresponsive-app
+        // relaunch seen on v0.42.8.
+        let now = Date()
+        let active = claudeBusy || toolBusy
+        if active { lastActivityAt = now }
+        let live = active
+            || now.timeIntervalSince(lastActivityAt) < (Self.barDurationSecs + 0.5)
+        if !live {
+            // Going idle: do exactly one final mutation so `body` re-runs
+            // once, recreating the TimelineView schedule in its stopped
+            // (single-frame) form. Reset the in-flight accumulators and
+            // streaks so a later resume starts clean rather than picking
+            // up a stale partial window or a pre-idle streak color.
+            if !chartFrozen {
+                chartFrozen = true
+                subSampleClaude = 0
+                subSampleTool = 0
+                subSampleCount = 0
+                claudeStreakSecs = 0
+                toolStreakSecs = 0
+                toolStartedThisWindow = false
+                toolNamesThisWindow = []
+                prevActiveToolIds = []
+            }
+            // Already frozen: pure no-op. No @State write means no
+            // SwiftUI invalidation, so a quiescent timer tick is free.
+            return
+        }
+        if chartFrozen { chartFrozen = false }
+        lastObservedToolMsTotal = cumulativeToolMs
 
         // Diagnostic: log state transitions to ~/.claude-terminal/debug.log
         // so we can verify that .thinking is actually observed between tools.
@@ -349,6 +401,38 @@ struct ActivityChartView: View {
             subSampleCount = 0
             toolStartedThisWindow = false
             toolNamesThisWindow = []
+        }
+    }
+}
+
+/// Schedule for the chart's slide `TimelineView`.
+///
+/// While `animating` it behaves like `.animation(minimumInterval: 1/30)`
+/// — a dense, unbounded stream of ~30fps dates. While not animating it
+/// yields exactly one entry and then ends, so `TimelineView` renders a
+/// single static frame and schedules no further redraws. The view body
+/// recreates this schedule (via `chartFrozen`) whenever the session
+/// resumes, which is what flips it back into the animating stream.
+private struct ActivitySlideSchedule: TimelineSchedule {
+    let animating: Bool
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
+        Entries(animating: animating, cursor: startDate)
+    }
+
+    struct Entries: Sequence, IteratorProtocol {
+        let animating: Bool
+        var cursor: Date
+        var emittedStatic = false
+
+        mutating func next() -> Date? {
+            if animating {
+                cursor = cursor.addingTimeInterval(1.0 / 30.0)
+                return cursor
+            }
+            if emittedStatic { return nil }
+            emittedStatic = true
+            return cursor
         }
     }
 }

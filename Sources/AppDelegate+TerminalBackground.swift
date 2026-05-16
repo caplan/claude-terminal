@@ -48,6 +48,7 @@ extension AppDelegate {
         guard let windowId = resolveWindowId(from: sender) else { return }
         customTerminalBackgrounds.removeValue(forKey: windowId)
         terminalBackgroundObservations.removeValue(forKey: windowId)?.invalidate()
+        resetTerminalBackgroundReapplyBreaker(windowId: windowId)
         if colorPanelWindowId == windowId {
             colorPanelWindowId = nil
         }
@@ -60,6 +61,7 @@ extension AppDelegate {
               let windowId = colorPanelWindowId else { return }
         let color = panel.color.usingColorSpace(.sRGB) ?? panel.color
         customTerminalBackgrounds[windowId] = color
+        resetTerminalBackgroundReapplyBreaker(windowId: windowId)
         applyTerminalBackground(windowId: windowId)
     }
 
@@ -205,8 +207,17 @@ extension AppDelegate {
         terminalBackgroundObservations[windowId] = observation
     }
 
+    // Circuit-breaker tuning. No legitimate event (e.g. `/clear` emitting
+    // OSC 11) reapplies more than once or twice; a non-converging KVO loop
+    // hits this within milliseconds.
+    private static let terminalBgReapplyWindow: TimeInterval = 2.0
+    private static let terminalBgReapplyMax = 12
+
     private func reapplyTerminalBackgroundIfDiverged(windowId: UUID) {
         guard !terminalBackgroundApplyInProgress.contains(windowId) else { return }
+        // Breaker already tripped for this window: auto-reapply is disabled
+        // until the user explicitly sets/removes a color.
+        guard !terminalBackgroundReapplyTripped.contains(windowId) else { return }
         guard let color = customTerminalBackgrounds[windowId],
               let window = windows[windowId],
               let hosted = TerminalSurfaceRegistry.shared.allSurfaces()
@@ -215,7 +226,34 @@ extension AppDelegate {
               let current = bgView.layer?.backgroundColor
         else { return }
         if cgColorsVisuallyEqual(current, color.cgColor) { return }
+
+        // Record this reapply and trip the breaker if they're arriving far
+        // faster than any real terminal event could cause — the divergence
+        // comparison must be failing to converge. Sever the KVO observation
+        // so the cycle's source stops firing; the user's chosen color is
+        // kept, only the self-healing reapply is disabled.
+        let now = Date()
+        var stamps = terminalBackgroundReapplyTimestamps[windowId, default: []]
+        stamps.append(now)
+        stamps.removeAll { now.timeIntervalSince($0) > Self.terminalBgReapplyWindow }
+        terminalBackgroundReapplyTimestamps[windowId] = stamps
+        if stamps.count > Self.terminalBgReapplyMax {
+            terminalBackgroundReapplyTripped.insert(windowId)
+            terminalBackgroundReapplyTimestamps[windowId] = nil
+            terminalBackgroundObservations.removeValue(forKey: windowId)?.invalidate()
+            NSLog("[TerminalBackground] reapply circuit breaker tripped for window \(windowId) — \(stamps.count) reapplies in \(Self.terminalBgReapplyWindow)s; disabling auto-reapply to prevent runaway CPU/disk writes")
+            return
+        }
+
         applyTerminalBackground(windowId: windowId)
+    }
+
+    /// Re-arm the breaker for a window — called when the user explicitly
+    /// sets or removes a custom background, which is an unambiguous signal
+    /// that this is intentional and the loop guard should reset.
+    private func resetTerminalBackgroundReapplyBreaker(windowId: UUID) {
+        terminalBackgroundReapplyTripped.remove(windowId)
+        terminalBackgroundReapplyTimestamps[windowId] = nil
     }
 
     /// CGColor's `==` is `CGColorEqualToColor`, which requires bit-identical
