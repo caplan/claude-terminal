@@ -55,6 +55,8 @@ Each window launches Claude Code with `CLAUDE_TERMINAL_SESSION_ID` set. The per-
 
 Concurrency: the hook script and the Swift side both write `status.json`. Atomicity comes from acquiring an `flock(LOCK_EX)` on a sibling `.status.lock` file for the read-modify-write, then a POSIX `rename(2)` from a temp file (`FileManager.moveItem` silently drops the overwrite, so `rename(2)` is the correct primitive).
 
+Retention: `~/.claude-terminal/sessions/<uuid>/` directories accumulate so the menu-bar popover can list past sessions across runs. `AppDelegate.pruneStaleFiles` (launch-time) keeps the newest 100 dirs modified within 30 days, and additionally removes any dir whose recorded `workingDirectory` has been deleted on disk. The popover (`SessionListViewModel.scanPastSessions`) also filters out missing-cwd entries at read time so deleted projects disappear immediately, before the next launch's prune.
+
 ### Hook diagnostics
 
 Every hook invocation writes stage breadcrumbs to `~/.claude-terminal/hook.log` via `fsync` so the trail survives SIGKILL / SIGSEGV. Each line is `HH:MM:SS.mmm [<8-char-session>] <event>`, covering entry, lock acquisition, state I/O, and exit. This exists because Claude Code reports hook failures as "non-blocking status code: no stderr output" — kernel signal-kills bypass stdio flushing, so stderr alone isn't reliable. The hook deliberately does **no** file-system walking in its own process (earlier attempts to scan cwd for Bash-produced images repeatedly SIGKILLed on slow volumes); the only `fileExists` calls it makes are on explicit `file_path` / `notebook_path` values from tool input.

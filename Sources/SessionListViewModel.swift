@@ -115,6 +115,8 @@ final class SessionListViewModel: ObservableObject {
             guard !dir.isEmpty else { continue }
             guard !activeDirs.contains(dir) else { continue }
             guard !hidden.contains(dir) else { continue }
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { continue }
 
             candidates.append(SessionEntry(
                 id: uuid,

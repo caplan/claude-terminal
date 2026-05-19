@@ -63,10 +63,22 @@ extension AppDelegate {
         }.sorted { $0.mtime > $1.mtime }
 
         for (idx, entry) in scored.enumerated() {
+            let path = "\(sessionsDir)/\(entry.name)"
             let tooOld = entry.mtime < cutoff
             let overCap = idx >= sessionRetentionMaxCount
             if tooOld || overCap {
-                try? fm.removeItem(atPath: "\(sessionsDir)/\(entry.name)")
+                try? fm.removeItem(atPath: path)
+                continue
+            }
+            // Drop entries whose recorded cwd has been deleted on disk —
+            // they'd just be filtered out of the popover at read time anyway.
+            if let data = fm.contents(atPath: "\(path)/status.json"),
+               let state = try? JSONDecoder().decode(SessionState.self, from: data),
+               let dir = state.workingDirectory, !dir.isEmpty {
+                var isDir: ObjCBool = false
+                if !fm.fileExists(atPath: dir, isDirectory: &isDir) || !isDir.boolValue {
+                    try? fm.removeItem(atPath: path)
+                }
             }
         }
     }
