@@ -117,7 +117,7 @@ enum JiraTicketDetector {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
+        do { try proc.run() } catch { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
         if proc.terminationStatus == 0 {
@@ -139,7 +139,7 @@ enum JiraTicketDetector {
         let pipe2 = Pipe()
         proc2.standardOutput = pipe2
         proc2.standardError = FileHandle.nullDevice
-        try? proc2.run()
+        do { try proc2.run() } catch { return nil }
         let data2 = pipe2.fileHandleForReading.readDataToEndOfFile()
         proc2.waitUntilExit()
         guard proc2.terminationStatus == 0 else { return nil }
