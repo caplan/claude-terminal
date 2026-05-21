@@ -615,6 +615,19 @@ func runStatusLine() {
         state["sessionName"] = sname
     }
 
+    // Pull request: Claude Code emits a `pr` block on the statusline payload
+    // when an open PR exists for the current branch. Drop the field once the
+    // PR closes/merges so the sidebar reflects current branch state.
+    if let pr = data["pr"] as? [String: Any],
+       let num = (pr["number"] as? NSNumber)?.intValue {
+        var info: [String: Any] = ["number": num]
+        if let url = pr["url"] as? String, !url.isEmpty { info["url"] = url }
+        if let rs = pr["review_state"] as? String, !rs.isEmpty { info["reviewState"] = rs }
+        state["pullRequest"] = info
+    } else {
+        state.removeValue(forKey: "pullRequest")
+    }
+
     writeState(state)
 
     // Output a compact status line to stdout for the terminal. Claude Code

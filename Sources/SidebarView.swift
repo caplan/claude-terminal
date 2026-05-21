@@ -31,6 +31,10 @@ struct SidebarView: View {
                 headerSection
                 sectionCard { statusSection }
 
+                if let pr = state.pullRequest {
+                    sectionCard { prSection(pr) }
+                }
+
                 if !state.subagents.isEmpty {
                     sectionCard { SubagentsSection(monitor: monitor) }
                 }
@@ -264,6 +268,124 @@ struct SidebarView: View {
                     TooltipWindow.shared.hide()
                 }
             }
+        }
+    }
+
+    // MARK: - PR section
+    //
+    // Claude Code's statusline `pr` payload only includes `number`, `url`,
+    // and `review_state` — the field is dropped entirely once a PR closes
+    // or merges, so we only ever see live PRs here. The state pill therefore
+    // resolves to "Draft" (when review_state == "draft") or "Open"; the
+    // closed/merged styles are kept available for future data sources.
+    @ViewBuilder
+    private func prSection(_ pr: PullRequest) -> some View {
+        let style = prStateStyle(reviewState: pr.reviewState)
+        // Build the PR number label as a plain String and render via
+        // Text(verbatim:) so SwiftUI's LocalizedStringKey path doesn't
+        // grouping-format it (otherwise #2356 renders as #2,356).
+        let numberLabel = "#" + String(pr.number)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(verbatim: "Pull Request")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                .textCase(.uppercase)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            HStack(spacing: 8) {
+                prStatePill(style)
+                if let urlString = pr.url, let url = URL(string: urlString) {
+                    Link(destination: url) {
+                        Text(verbatim: numberLabel)
+                            .font(.system(size: 13, weight: .medium, design: .monospaced))
+                            .foregroundColor(.blue)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .onHover { isHovered in
+                        if isHovered { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
+                } else {
+                    Text(verbatim: numberLabel)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                Spacer(minLength: 0)
+                if let review = prReviewLabel(pr.reviewState, prState: style.state) {
+                    Text(verbatim: review.label)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(review.color)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(review.color.opacity(0.15))
+                        .cornerRadius(3)
+                }
+            }
+        }
+    }
+
+    private enum PRState { case open, draft, merged, closed }
+
+    private struct PRStateStyle {
+        let state: PRState
+        let label: String
+        let icon: String
+        let color: Color
+    }
+
+    private func prStateStyle(reviewState: String?) -> PRStateStyle {
+        if reviewState == "draft" {
+            return PRStateStyle(
+                state: .draft,
+                label: "Draft",
+                icon: "arrow.triangle.pull",
+                color: Color(nsColor: .secondaryLabelColor)
+            )
+        }
+        return PRStateStyle(
+            state: .open,
+            label: "Open",
+            icon: "arrow.triangle.pull",
+            color: Color(red: 0.18, green: 0.55, blue: 0.27) // GitHub open green
+        )
+    }
+
+    @ViewBuilder
+    private func prStatePill(_ style: PRStateStyle) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: style.icon)
+                .font(.system(size: 10, weight: .bold))
+            Text(verbatim: style.label)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            Capsule().fill(style.color)
+        )
+    }
+
+    private func prReviewLabel(_ reviewState: String?, prState: PRState)
+        -> (label: String, color: Color)?
+    {
+        guard let rs = reviewState, !rs.isEmpty, prState != .draft else { return nil }
+        switch rs {
+        case "approved":
+            return ("approved", .green)
+        case "changes_requested":
+            return ("changes requested", .red)
+        case "pending":
+            return ("review pending", Color(nsColor: .secondaryLabelColor))
+        default:
+            return (rs.replacingOccurrences(of: "_", with: " "),
+                    Color(nsColor: .secondaryLabelColor))
         }
     }
 

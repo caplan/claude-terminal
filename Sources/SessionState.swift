@@ -52,6 +52,12 @@ struct ActiveTool: Codable, Equatable, Identifiable {
     var detail: String?
 }
 
+struct PullRequest: Codable, Equatable {
+    var number: Int
+    var url: String?
+    var reviewState: String?
+}
+
 struct NetworkToolEntry: Codable, Equatable {
     var ms: Int
     var tool: String
@@ -98,6 +104,7 @@ struct SessionState: Codable, Equatable {
     var conversationTurns: Int?
     var needsInput: Bool?
     var permissionMode: String?
+    var pullRequest: PullRequest?
     var apiSendMs: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -105,7 +112,7 @@ struct SessionState: Codable, Equatable {
         case status, contextUsage, cost, claudeCodeSessionId
         case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput
-        case permissionMode
+        case permissionMode, pullRequest
         case apiSendMs = "_apiSendMs"
     }
 

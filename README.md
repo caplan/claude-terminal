@@ -47,6 +47,8 @@ The sidebar is a set of cards. They appear and collapse as they become relevant,
 
 **Working directory.** Your cwd with a project favicon auto-loaded from the folder. A GitHub icon appears next to it when cwd is inside a git repo *and* GitHub's public status API reports an incident — hover for the summary, click to open status.github.com.
 
+**Pull request.** When the current branch has an open PR, a card surfaces a GitHub-style state pill (green **Open**, gray **Draft**) and the PR number as a clickable link to GitHub. A right-aligned chip shows the review decision (`approved`, `changes requested`, `review pending`) when one is set. The data comes from Claude Code's statusline payload — no `gh` auth needed on the claude-terminal side.
+
 **Jira ticket.** If your branch name or a recent prompt mentions a Jira key (e.g. `ABC-123`), the ticket number and title surface here as a clickable link. Requires a Jira CLI (`ankitpokhrel/jira-cli` or `go-jira`) on PATH.
 
 ## Viewing files Claude touches
