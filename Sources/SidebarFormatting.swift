@@ -42,7 +42,14 @@ func sidebarStatusColor(_ status: SessionStatus) -> Color {
     }
 }
 
-func sidebarStatusLabel(_ status: SessionStatus) -> String {
+func sidebarStatusLabel(
+    _ status: SessionStatus,
+    justStopped: Bool = false,
+    silentEndTurn: Bool = false
+) -> String {
+    if status == .idle && justStopped {
+        return silentEndTurn ? "Done · no reply" : "Done"
+    }
     switch status {
     case .idle: return "Idle"
     case .thinking: return "Working"

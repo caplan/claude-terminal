@@ -37,6 +37,17 @@ struct TranscriptSnapshot: Equatable {
     /// Top dead artifacts by est_tokens, for the "what's wasting your
     /// context" disclosure. Capped at 5 entries, sorted descending.
     var contextDeadArtifacts: [DeadArtifactEntry]
+    /// True once we've seen at least one host (non-sidechain) assistant
+    /// message in this transcript. Gates the "Done" label so a freshly
+    /// opened session doesn't flash it before any work has happened.
+    var hasSeenAssistant: Bool
+    /// Did the most recent host assistant message contain a text block?
+    /// Defaults to true so cold-start sessions don't claim "no reply".
+    var lastAssistantHadText: Bool
+    /// Did that same most-recent assistant message contain any tool_use
+    /// blocks? Used together with `lastAssistantHadText` to distinguish a
+    /// truly silent end_turn (text-less, tool-less) from a tool-only turn.
+    var lastAssistantHadToolUse: Bool
 
     struct DeadArtifactEntry: Equatable {
         let key: String
@@ -57,7 +68,10 @@ struct TranscriptSnapshot: Equatable {
         contextUnusedPct: nil,
         contextTrackedTokens: nil,
         contextUnusedTokens: nil,
-        contextDeadArtifacts: []
+        contextDeadArtifacts: [],
+        hasSeenAssistant: false,
+        lastAssistantHadText: true,
+        lastAssistantHadToolUse: false
     )
 }
 
@@ -349,10 +363,28 @@ final class TranscriptTailer {
             changed = true
         }
 
-        if let text = Self.extractTextOnly(content), !text.isEmpty {
+        let extractedText = Self.extractTextOnly(content)
+        if let text = extractedText, !text.isEmpty {
             snapshot.latestText = text
             appendRecentText(text)
             changed = true
+        }
+
+        // Track whether the most recent host (non-sidechain) assistant
+        // message had any visible text. Subagent traces are sidechains and
+        // don't represent the host's end-of-turn state. Without this guard a
+        // silent subagent could flip the host label to "no reply".
+        if (obj["isSidechain"] as? Bool) != true {
+            let hasText = (extractedText.map { !$0.isEmpty }) ?? false
+            let hasToolUse = toolUses > 0
+            if !snapshot.hasSeenAssistant
+                || snapshot.lastAssistantHadText != hasText
+                || snapshot.lastAssistantHadToolUse != hasToolUse {
+                snapshot.hasSeenAssistant = true
+                snapshot.lastAssistantHadText = hasText
+                snapshot.lastAssistantHadToolUse = hasToolUse
+                changed = true
+            }
         }
 
         if let date = Self.parseTimestamp(obj["timestamp"]) {

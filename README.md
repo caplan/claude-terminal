@@ -33,7 +33,7 @@ Type a prompt in the terminal as you would with `claude` directly. As Claude res
 
 The sidebar is a set of cards. They appear and collapse as they become relevant, so it's not all visible at once.
 
-**Status headline.** The top of the sidebar shows what Claude is doing right now — thinking, running a tool, waiting for input. The current tool name and a short argument summary appear beneath it, tinted by tool type. The most recent italic line of assistant prose surfaces here too, with inline markdown rendered (`**bold**`, `*italic*`, `` `code` ``) instead of raw asterisks.
+**Status headline.** The top of the sidebar shows what Claude is doing right now — thinking, running a tool, waiting for input. When a turn ends, the label flips to **Done** for ~10 seconds before fading to plain Idle, so a glance up from the terminal tells you whether Claude just stopped or has been quiet for a while. If Claude finishes without saying anything (e.g. reads a screenshot and returns end_turn with no text), the label reads **Done · no reply** — making the silent stop obvious instead of leaving you guessing. The current tool name and a short argument summary appear beneath it, tinted by tool type. The most recent italic line of assistant prose surfaces here too, with inline markdown rendered (`**bold**`, `*italic*`, `` `code` ``) instead of raw asterisks.
 
 **Activity chart.** A CPU-style bidirectional bar graph of the last 3 minutes. Claude bars grow up from the centerline, tool bars grow down. Colour ramps light-blue → yellow → orange → red as a single operation stays busy, peaking at red after 30 minutes — useful for spotting a stuck tool call. Hover a tool bar to see which tools ran in that slice.
 

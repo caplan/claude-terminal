@@ -537,7 +537,7 @@ struct SidebarView: View {
             Circle()
                 .fill(statusColor(state.status))
                 .frame(width: 8, height: 8)
-            Text(statusLabel(state.status))
+            Text(statusLabel(state.status, justStopped: justStopped, silentEndTurn: silentEndTurn))
                 .font(.system(size: 14))
                 .foregroundColor(.primary)
             Spacer(minLength: 8)
@@ -843,7 +843,32 @@ struct SidebarView: View {
     }
 
     private func statusColor(_ status: SessionStatus) -> Color { sidebarStatusColor(status) }
-    private func statusLabel(_ status: SessionStatus) -> String { sidebarStatusLabel(status) }
+    private func statusLabel(
+        _ status: SessionStatus,
+        justStopped: Bool = false,
+        silentEndTurn: Bool = false
+    ) -> String {
+        sidebarStatusLabel(status, justStopped: justStopped, silentEndTurn: silentEndTurn)
+    }
+
+    /// True for the ~10s window after status flips to .idle, but only once
+    /// we've seen at least one host assistant message — keeps a fresh
+    /// session from flashing "Done" before any work has happened. The
+    /// transcript snapshot is `@Published`, so a late-arriving final
+    /// assistant line will trigger a re-evaluation here without an explicit
+    /// debounce.
+    private var justStopped: Bool {
+        guard state.status == .idle,
+              monitor.transcript.hasSeenAssistant,
+              let at = idleAt else { return false }
+        return Date().timeIntervalSince(at) < 10
+    }
+
+    /// True only inside the justStopped window, when the most recent host
+    /// assistant message had no text. Drives the "Done · no reply" label.
+    private var silentEndTurn: Bool {
+        justStopped && !monitor.transcript.lastAssistantHadText
+    }
     private func contextBarColor(_ fraction: Double) -> Color { sidebarContextBarColor(fraction) }
     private func formatTokens(_ count: Int) -> String { sidebarFormatTokens(count) }
     private func formatCost(_ usd: Double) -> String { sidebarFormatCost(usd) }
