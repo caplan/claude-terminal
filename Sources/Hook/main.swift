@@ -248,8 +248,16 @@ func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
     if let model = event["model"] { state["modelName"] = model }
     state["currentToolName"] = NSNull()
     state["toolDetail"] = NSNull()
+    state["activeTools"] = []
     state["subagents"] = []
     state["tasks"] = []
+    // Reset cumulative-per-session counters. /clear creates a fresh
+    // session_id; cost, turn count, and network totals all belong to the
+    // prior session and must not bleed across. Resume hydrates these
+    // again from the persist map below when the id matches.
+    state.removeValue(forKey: "cost")
+    state.removeValue(forKey: "network")
+    state["conversationTurns"] = 0
     // Do NOT clear documents on SessionStart. Swift seeds this list from
     // the per-workingdir persist file before the hook runs, so docs
     // Claude wrote in prior sessions stay in the sidebar.
@@ -257,7 +265,9 @@ func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
         state["claudeCodeSessionId"] = ccId
         // Seed displayed cost from last persisted value so the sidebar
         // shows something immediately on reopen until the first statusline
-        // poll arrives with the authoritative cumulative total.
+        // poll arrives with the authoritative cumulative total. Only
+        // matches when Claude Code is resuming the same session_id —
+        // /clear's brand-new id won't be in the map.
         let persist = readPersistMap()
         if let last = persist[ccId], last["totalCostUsd"] != nil {
             state["cost"] = last
