@@ -88,7 +88,15 @@ final class MenuBarController: NSObject {
 
     private func showPanel() {
         guard !isShown else { return }
-        guard let button = statusItem?.button,
+        // When the menubar fills up, macOS hides overflow status items and
+        // sets isVisible=false on them. button.frame still reports a logical
+        // position (often offscreen-left or behind the notch), so anchoring
+        // a panel to it lands the panel in the wrong place — the bug seen
+        // when UniFi's many menu items + a packed right-side status area
+        // pushed our icon into overflow. Skip the panel entirely when the
+        // icon isn't actually visible; the user has nothing to anchor to.
+        guard let item = statusItem, item.isVisible,
+              let button = item.button,
               let buttonWindow = button.window else { return }
 
         viewModel.refresh()
@@ -116,7 +124,15 @@ final class MenuBarController: NSObject {
 
         let buttonRect = button.convert(button.bounds, to: nil)
         let screenRect = buttonWindow.convertToScreen(buttonRect)
-        let x = screenRect.midX - contentSize.width / 2
+        let screen = buttonWindow.screen ?? NSScreen.main ?? NSScreen.screens.first
+        let visible = screen?.visibleFrame ?? NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let edgePadding: CGFloat = 8
+        // Clamp x so the panel stays on the visible screen even if the
+        // anchor math is off by a hidden/overflow icon.
+        let rawX = screenRect.midX - contentSize.width / 2
+        let minX = visible.minX + edgePadding
+        let maxX = visible.maxX - contentSize.width - edgePadding
+        let x = max(minX, min(maxX, rawX))
         let y = screenRect.minY - contentSize.height - 4
         p.setFrameOrigin(NSPoint(x: x, y: y))
 
@@ -180,7 +196,12 @@ final class MenuBarController: NSObject {
     }
 
     private func isMouseOverButton() -> Bool {
-        guard let button = statusItem?.button, let buttonWindow = button.window else { return false }
+        // Don't treat a hover as "over the button" if macOS has hidden the
+        // status item in the overflow zone — its reported frame is bogus
+        // there and would trigger spurious popovers far from the cursor.
+        guard let item = statusItem, item.isVisible,
+              let button = item.button,
+              let buttonWindow = button.window else { return false }
         let buttonRect = button.convert(button.bounds, to: nil)
         let screenRect = buttonWindow.convertToScreen(buttonRect)
         return screenRect.contains(NSEvent.mouseLocation)
