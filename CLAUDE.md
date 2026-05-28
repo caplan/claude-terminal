@@ -17,7 +17,7 @@ Bundle ID: `org.claire.claude-terminal`.
 - AppKit lifecycle is hand-rolled in `Sources/main.swift`. Don't switch to SwiftUI `@main` — the SwiftUI lifecycle doesn't reliably call `applicationDidFinishLaunching`.
 - Use `NSHostingView` with an explicit frame, not `NSHostingController` — the controller collapses to 1×32 px because `GhosttyTerminalView` has zero intrinsic size.
 - `SidebarView` must live in its own `NSHostingView` (via `SidebarHostView`). The Metal renderer prevents SwiftUI from invalidating sibling views.
-- Never re-introduce cost summation on our side; `Claude Code`'s `total_cost_usd` is already cumulative across `--continue`. See `Sources/Hook/main.swift:runStatusLine`.
+- Never re-introduce cost summation on our side; Claude Code's `total_cost_usd` is cumulative across `--continue` *and* `/clear`. The one allowed deviation is the per-`/clear` baseline subtraction in `Sources/Hook/main.swift:runStatusLine` — we snapshot the cumulative total on the first poll after `/clear` and subtract it on every later poll so the sidebar shows post-clear deltas. Subtraction only — never sum a saved value on top of Claude Code's number; that path doubled cost on save+quit+relaunch (see commit 0403696).
 - Atomic file replacement uses POSIX `rename(2)`, not `FileManager.moveItem` (which silently drops overwrites under `try?`). Any cross-process mutation of `status.json` must hold `flock(LOCK_EX)` on `.status.lock` first.
 - Stay on `0.x` releases. Do not create `1.x` tags.
 

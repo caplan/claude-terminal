@@ -94,7 +94,7 @@ A small template-rendered GitHub octocat SVG (`Resources/Assets.xcassets/github.
 
 ## Cost accounting
 
-`cost.total_cost_usd` coming from Claude Code's statusLine payload is **cumulative for the session**, including prior runs when resumed with `--continue`. We pass it through as-is — no baseline addition, no summation on our side. See `Hook/main.swift:runStatusLine`. A per-session snapshot is written to `~/.claude-terminal/cost-by-session.json` keyed by Claude Code's `session_id`, used purely to seed the sidebar with the last-known value before the first poll arrives on reopen.
+`cost.total_cost_usd` from the statusLine payload is **cumulative for the entire CLI lifetime** — it spans `--continue` resumes *and* `/clear`. We pass it through as-is on every poll except after `/clear`: when the SessionStart hook fires with `source: "clear"`, it stamps `_pendingCostReset` on `state`. The next `runStatusLine` consumes that flag, snapshots the current cumulative report into `_costBaseline`, and subsequent polls compute `displayed = reported - baseline` per-field. The baseline lives in `state` (status.json), so it persists across reopen; the persist file at `~/.claude-terminal/cost-by-session.json` therefore stores the post-baseline value, which is exactly what the sidebar wants to seed on reopen. Subtraction only — never sum a saved value on top of Claude Code's number; that path doubled cost on save+quit+relaunch (commit 0403696). See `Hook/main.swift:runStatusLine` and `handleSessionStart`.
 
 ## Portal system (critical)
 

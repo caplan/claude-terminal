@@ -244,6 +244,7 @@ func runHook() {
 // MARK: - Per-event handlers
 
 func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
+    let source = (event["source"] as? String) ?? ""
     state["status"] = "idle"
     if let model = event["model"] { state["modelName"] = model }
     state["currentToolName"] = NSNull()
@@ -251,13 +252,25 @@ func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
     state["activeTools"] = []
     state["subagents"] = []
     state["tasks"] = []
-    // Reset cumulative-per-session counters. /clear creates a fresh
-    // session_id; cost, turn count, and network totals all belong to the
-    // prior session and must not bleed across. Resume hydrates these
-    // again from the persist map below when the id matches.
+    // Reset cumulative-per-session counters. cost, turn count, network
+    // totals, and context usage all belong to the prior session and must
+    // not bleed into the cleared one. Resume hydrates cost again from
+    // the persist map below; context is re-reported by the next poll.
     state.removeValue(forKey: "cost")
     state.removeValue(forKey: "network")
+    state.removeValue(forKey: "contextUsage")
     state["conversationTurns"] = 0
+    // /clear in Claude Code does NOT reset `cost.total_cost_usd` in the
+    // statusline payload — that field is cumulative for the whole CLI
+    // lifetime, even though /clear creates a new conversation. To make
+    // /clear actually zero out the sidebar, we capture the next poll's
+    // cumulative value as a baseline and subtract it on every subsequent
+    // poll. This is the inverse of the doubling bug fixed in 0403696
+    // (we subtract Claude Code's number rather than summing on top of it),
+    // so it doesn't violate the "no cost summation" rule.
+    if source == "clear" {
+        state["_pendingCostReset"] = true
+    }
     // Do NOT clear documents on SessionStart. Swift seeds this list from
     // the per-workingdir persist file before the hook runs, so docs
     // Claude wrote in prior sessions stay in the sidebar.
@@ -265,12 +278,14 @@ func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
         state["claudeCodeSessionId"] = ccId
         // Seed displayed cost from last persisted value so the sidebar
         // shows something immediately on reopen until the first statusline
-        // poll arrives with the authoritative cumulative total. Only
-        // matches when Claude Code is resuming the same session_id —
-        // /clear's brand-new id won't be in the map.
-        let persist = readPersistMap()
-        if let last = persist[ccId], last["totalCostUsd"] != nil {
-            state["cost"] = last
+        // poll arrives with the authoritative cumulative total. Skip the
+        // seed for /clear — we want the sidebar to land on $0 instantly,
+        // not flash the pre-clear total while waiting for the next poll.
+        if source != "clear" {
+            let persist = readPersistMap()
+            if let last = persist[ccId], last["totalCostUsd"] != nil {
+                state["cost"] = last
+            }
         }
     }
 }
@@ -570,33 +585,60 @@ func runStatusLine() {
         state["contextUsage"] = usage
     }
 
-    // Cost: Claude Code's statusline already reports cumulative session totals
-    // across --continue, so use them directly. The SessionStart hook seeds
-    // state["cost"] from the persist file as a placeholder until the first
-    // real poll arrives.
+    // Cost: Claude Code's statusline reports cumulative totals across the
+    // entire CLI lifetime — /clear does NOT reset them. The SessionStart
+    // hook flags `_pendingCostReset` when the user runs /clear; we honor
+    // that here by snapshotting the current cumulative report as a baseline
+    // and subtracting it from every later poll, so the sidebar shows
+    // post-clear deltas. The baseline lives in `_costBaseline` and persists
+    // across reopen via status.json. Subtraction only — no summation, so
+    // this stays clear of the doubling bug fixed in 0403696.
     if let cost = data["cost"] as? [String: Any] {
         let repUsd = (cost["total_cost_usd"] as? NSNumber)?.doubleValue ?? 0
         let repDur = (cost["total_duration_ms"] as? NSNumber)?.intValue ?? 0
         let repApiDur = (cost["total_api_duration_ms"] as? NSNumber)?.intValue ?? 0
         let repAdd = (cost["total_lines_added"] as? NSNumber)?.intValue ?? 0
         let repRem = (cost["total_lines_removed"] as? NSNumber)?.intValue ?? 0
+
+        if (state["_pendingCostReset"] as? Bool) == true {
+            state["_costBaseline"] = [
+                "totalCostUsd": repUsd,
+                "totalDurationMs": repDur,
+                "totalApiDurationMs": repApiDur,
+                "totalLinesAdded": repAdd,
+                "totalLinesRemoved": repRem,
+            ] as [String: Any]
+            state.removeValue(forKey: "_pendingCostReset")
+        }
+
+        let baseline = (state["_costBaseline"] as? [String: Any]) ?? [:]
+        let bUsd = (baseline["totalCostUsd"] as? NSNumber)?.doubleValue ?? 0
+        let bDur = (baseline["totalDurationMs"] as? NSNumber)?.intValue ?? 0
+        let bApiDur = (baseline["totalApiDurationMs"] as? NSNumber)?.intValue ?? 0
+        let bAdd = (baseline["totalLinesAdded"] as? NSNumber)?.intValue ?? 0
+        let bRem = (baseline["totalLinesRemoved"] as? NSNumber)?.intValue ?? 0
+
+        let dispUsd = max(0, repUsd - bUsd)
+        let dispDur = max(0, repDur - bDur)
+        let dispApiDur = max(0, repApiDur - bApiDur)
+        let dispAdd = max(0, repAdd - bAdd)
+        let dispRem = max(0, repRem - bRem)
         let totalCost: [String: Any] = [
-            "totalCostUsd": repUsd,
-            "totalDurationMs": repDur,
-            "totalApiDurationMs": repApiDur,
-            "totalLinesAdded": repAdd,
-            "totalLinesRemoved": repRem,
+            "totalCostUsd": dispUsd,
+            "totalDurationMs": dispDur,
+            "totalApiDurationMs": dispApiDur,
+            "totalLinesAdded": dispAdd,
+            "totalLinesRemoved": dispRem,
         ]
         state["cost"] = totalCost
 
-        // Network metrics
+        // Network metrics — use post-baseline values so /clear zeros these
+        // out alongside cost rather than carrying pre-clear API time forward.
         let turns = (state["conversationTurns"] as? Int) ?? 0
         if turns > 0 {
             var net = (state["network"] as? [String: Any]) ?? [:]
-            let apiMs = (cost["total_api_duration_ms"] as? NSNumber)?.intValue ?? 0
-            let totalMs = (cost["total_duration_ms"] as? NSNumber)?.intValue ?? 0
-            net["avgApiMsPerTurn"] = apiMs / turns
-            if totalMs > 0 { net["apiTimePercent"] = apiMs * 100 / totalMs }
+            net["avgApiMsPerTurn"] = dispApiDur / turns
+            if dispDur > 0 { net["apiTimePercent"] = dispApiDur * 100 / dispDur }
             state["network"] = net
         }
 
