@@ -6,10 +6,15 @@ enum HookInstaller {
 
     /// Absolute path to the claude-terminal-hook executable inside the app bundle.
     /// Claude Code hooks invoke this via the command field in ~/.claude/settings.json.
+    ///
+    /// Resolved via executableURL, not bundleURL: when launched through the
+    /// /usr/local/bin/claude-terminal symlink, Bundle.main.bundleURL falls back
+    /// to /usr/local/bin (Foundation can't find Contents/Info.plist relative to
+    /// the symlink), which would write a bogus hook path into ~/.claude/settings.json.
     private static var helperBinaryPath: String {
-        Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Resources/claude-terminal-hook")
-            .path
+        let exe = (Bundle.main.executableURL ?? Bundle.main.bundleURL).resolvingSymlinksInPath()
+        let bundle = exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return bundle.appendingPathComponent("Contents/Resources/claude-terminal-hook").path
     }
 
     static func installIfNeeded() {
