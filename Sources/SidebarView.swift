@@ -292,7 +292,9 @@ struct SidebarView: View {
                 .textCase(.uppercase)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
-            HStack(spacing: 8) {
+            // Flow layout so the review badge wraps to a second line in a
+            // narrow sidebar instead of overflowing the trailing edge.
+            PRRowFlowLayout(spacing: 8, lineSpacing: 4) {
                 prStatePill(style)
                 if let urlString = pr.url, let url = URL(string: urlString) {
                     Link(destination: url) {
@@ -312,7 +314,6 @@ struct SidebarView: View {
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                Spacer(minLength: 0)
                 if let review = prReviewLabel(pr.reviewState, prState: style.state) {
                     Text(verbatim: review.label)
                         .font(.system(size: 10, weight: .medium))
@@ -901,6 +902,73 @@ private struct ToolDetailText: View {
             .lineLimit(4)
             .truncationMode(.middle)
             .help(rawDetail)
+    }
+}
+
+/// A simple left-to-right flow layout: lays subviews out in a row, wrapping to
+/// the next line when the next subview would exceed the proposed width. Each
+/// subview is vertically centered within its row. Used by the PR section so the
+/// review-state badge drops to a second line in a narrow sidebar rather than
+/// clipping at the trailing edge.
+private struct PRRowFlowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 4
+
+    private func rows(maxWidth: CGFloat, sizes: [CGSize]) -> [[Int]] {
+        var rows: [[Int]] = []
+        var current: [Int] = []
+        var rowWidth: CGFloat = 0
+        for (index, size) in sizes.enumerated() {
+            let needed = current.isEmpty ? size.width : rowWidth + spacing + size.width
+            if !current.isEmpty && needed > maxWidth {
+                rows.append(current)
+                current = [index]
+                rowWidth = size.width
+            } else {
+                current.append(index)
+                rowWidth = needed
+            }
+        }
+        if !current.isEmpty { rows.append(current) }
+        return rows
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let rows = rows(maxWidth: maxWidth, sizes: sizes)
+        var totalHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+        for (rowIndex, row) in rows.enumerated() {
+            let rowWidth = row.reduce(0) { $0 + sizes[$1].width }
+                + spacing * CGFloat(max(0, row.count - 1))
+            let rowHeight = row.map { sizes[$0].height }.max() ?? 0
+            totalWidth = max(totalWidth, rowWidth)
+            totalHeight += rowHeight
+            if rowIndex < rows.count - 1 { totalHeight += lineSpacing }
+        }
+        return CGSize(width: min(totalWidth, maxWidth), height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let rows = rows(maxWidth: bounds.width, sizes: sizes)
+        var y = bounds.minY
+        for row in rows {
+            let rowHeight = row.map { sizes[$0].height }.max() ?? 0
+            var x = bounds.minX
+            for index in row {
+                let size = sizes[index]
+                let yOffset = (rowHeight - size.height) / 2
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + yOffset),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(size)
+                )
+                x += size.width + spacing
+            }
+            y += rowHeight + lineSpacing
+        }
     }
 }
 
