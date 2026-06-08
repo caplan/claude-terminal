@@ -1,4 +1,42 @@
 import AppKit
+import Darwin
+
+// When launched through a symlink on $PATH (e.g. /usr/local/bin/claude-terminal →
+// Contents/MacOS/claude-terminal), dyld reports the *symlink* path as the executable,
+// so Bundle.main resolves to the symlink's directory (e.g. /usr/local/bin) instead of
+// the .app. That breaks Sparkle ("updater failed to start", host name shown as "bin")
+// and any other bundle-relative lookup. Re-exec from the real in-bundle executable so
+// Bundle.main points at the .app. Must run before anything reads Bundle.main or starts
+// NSApplication.
+func reexecFromAppBundleIfNeeded() {
+    // Already resolved to a real .app bundle, or we've already re-exec'd once.
+    guard Bundle.main.bundleURL.pathExtension != "app" else { return }
+    guard ProcessInfo.processInfo.environment["CLAUDE_TERMINAL_REEXEC"] == nil else { return }
+
+    // Canonical on-disk path of this executable, with symlinks resolved.
+    var size: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &size)
+    var rawPath = [CChar](repeating: 0, count: Int(size))
+    guard _NSGetExecutablePath(&rawPath, &size) == 0 else { return }
+    var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+    guard realpath(rawPath, &resolved) != nil else { return }
+    let realExe = String(cString: resolved)
+
+    // Only re-exec if the real executable actually lives inside a .app bundle.
+    guard realExe.contains(".app/Contents/MacOS/") else { return }
+
+    setenv("CLAUDE_TERMINAL_REEXEC", "1", 1)
+    var argv = CommandLine.arguments
+    argv[0] = realExe
+    var cArgv = argv.map { strdup($0) }
+    cArgv.append(nil)
+    execv(realExe, &cArgv)
+    // execv only returns on failure; fall through and run as-is.
+    cArgv.forEach { free($0) }
+    unsetenv("CLAUDE_TERMINAL_REEXEC")
+}
+
+reexecFromAppBundleIfNeeded()
 
 struct CLIArguments {
     var workingDirectory: String?
