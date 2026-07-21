@@ -41,11 +41,21 @@ struct ContentView: View {
                 }
             }
         }
+        // Auto-close the window only on a clean (exit 0) claude exit. On an
+        // abnormal exit (crash, signal, error), keep the login shell open so
+        // the error output stays on screen — otherwise the window vanishes
+        // silently and looks like an app crash — and append a one-line record
+        // to a log so past exits are diagnosable even if unattended.
+        let closeTail =
+            "; __ct_ec=$?; if [ \"$__ct_ec\" -eq 0 ]; then exit; else "
+            + "printf '\\n[claude exited with status %s - shell kept open; type exit to close]\\n' \"$__ct_ec\"; "
+            + "echo \"$(date '+%FT%T%z') status=$__ct_ec dir=$PWD\" >>\"$HOME/Library/Logs/claude-terminal-exits.log\" 2>/dev/null; "
+            + "fi\n"
         if let claudeOptions, claudeOptions.contains("--continue") {
             let fallbackCmd = claudeCmd.replacingOccurrences(of: "--continue", with: "").replacingOccurrences(of: "  ", with: " ")
-            config.initialInput = claudeCmd + " || " + fallbackCmd + "; exit\n"
+            config.initialInput = "( " + claudeCmd + " || " + fallbackCmd + " )" + closeTail
         } else {
-            config.initialInput = claudeCmd + "; exit\n"
+            config.initialInput = claudeCmd + closeTail
         }
 
         let surface = TerminalSurface(
