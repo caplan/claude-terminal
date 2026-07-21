@@ -228,6 +228,12 @@ struct ActivityChartView: View {
     }
 
     private static func appendDebugLog(_ line: String) {
+        // Diagnostic only. In release builds this is off unless CT_DEBUG_LOG is
+        // set, so ~/.claude-terminal/debug.log doesn't grow unbounded for normal
+        // users (it appended a line on every status transition otherwise).
+        #if !DEBUG
+        guard ProcessInfo.processInfo.environment["CT_DEBUG_LOG"] != nil else { return }
+        #endif
         guard let data = line.data(using: .utf8) else { return }
         let fm = FileManager.default
         if !fm.fileExists(atPath: debugLogPath) {

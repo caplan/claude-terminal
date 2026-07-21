@@ -27,7 +27,19 @@ let hookLogFile = "\(home)/.claude-terminal/hook.log"
 /// Flushing to a file synced per call means the trail survives SIGKILL
 /// / SIGSEGV — useful for diagnosing "non-blocking status code, no stderr"
 /// errors where Claude Code's stderr capture is unreliable.
+/// Keep the breadcrumb log bounded: once hook.log passes the cap, roll it to
+/// hook.log.1 (one backup). rename(2) is atomic and the next write recreates
+/// hook.log via O_CREAT, so concurrent hooks stay safe. Caps total on-disk use
+/// at ~2x the threshold instead of growing without limit.
+func rotateHookLogIfNeeded() {
+    let maxBytes: off_t = 5 * 1024 * 1024
+    var st = stat()
+    guard stat(hookLogFile, &st) == 0, st.st_size > maxBytes else { return }
+    _ = rename(hookLogFile, hookLogFile + ".1")
+}
+
 func hookLog(_ message: String) {
+    rotateHookLogIfNeeded()
     let ts: String = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"
