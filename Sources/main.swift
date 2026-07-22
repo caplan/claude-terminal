@@ -115,9 +115,37 @@ let parsedOverrides: [String: Any]? = {
     return parsed
 }()
 
-// If the app is already running, send it a URL to open a new window and exit
-let bundleId = Bundle.main.bundleIdentifier ?? "org.claire.claude-terminal"
-if NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).contains(where: { $0 != .current }) {
+// Single-instance lock, held for the whole process lifetime by the primary
+// instance. Any later launch that can't acquire it *definitively* knows
+// another instance is live — unlike the NSRunningApplication check below,
+// which queries LaunchServices state at the very top of startup (before this
+// process becomes a GUI app) and can transiently miss a running instance.
+// When it does, the new process falls through to app.run() and becomes a
+// second .regular app under the same bundle id; the two collide in the
+// WindowServer and the older one — holding all its session windows — gets
+// torn down with no crash. The lock closes that race. The fd is deliberately
+// never closed: it must stay held until the process dies (the kernel then
+// releases the flock automatically).
+var singleInstanceLockFD: Int32 = -1
+
+func acquireSingleInstanceLock() -> Bool {
+    let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude-terminal")
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let path = (dir as NSString).appendingPathComponent("instance.lock")
+    let fd = open(path, O_CREAT | O_RDWR, 0o644)
+    guard fd >= 0 else { return true }  // lock infra unavailable → don't block launch
+    if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+        singleInstanceLockFD = fd  // hold for the process lifetime
+        return true
+    }
+    close(fd)
+    return false  // another instance holds the lock
+}
+
+// Forward this invocation to the already-running instance (open a new window
+// there) and exit. Used both when LaunchServices sees a live instance and
+// when the single-instance lock is already held.
+func forwardToRunningInstanceAndExit(_ cliArgs: CLIArguments?) -> Never {
     var components = URLComponents()
     components.scheme = "claude-terminal"
     components.host = "open"
@@ -139,6 +167,20 @@ if NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).cont
         proc.waitUntilExit()
     }
     exit(0)
+}
+
+// If the app is already running, hand off to it and exit. Two independent
+// signals, so a miss by either still routes correctly: LaunchServices (fast,
+// but racy at startup) OR failure to grab the single-instance lock (race-free
+// once both instances are on this version). The OR also keeps working against
+// an older primary that predates the lock — LaunchServices still sees it.
+let bundleId = Bundle.main.bundleIdentifier ?? "org.claire.claude-terminal"
+let anotherInstanceViaLS = NSRunningApplication
+    .runningApplications(withBundleIdentifier: bundleId)
+    .contains(where: { $0 != .current })
+let gotSingleInstanceLock = acquireSingleInstanceLock()
+if anotherInstanceViaLS || !gotSingleInstanceLock {
+    forwardToRunningInstanceAndExit(cliArgs)
 }
 
 // Fresh launch: install overrides into NSArgumentDomain before AppDelegate
