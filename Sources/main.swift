@@ -38,6 +38,10 @@ func reexecFromAppBundleIfNeeded() {
 
 reexecFromAppBundleIfNeeded()
 
+// Capture crashes to ~/.claude-terminal/diagnostics/crash.log immediately.
+// Installed right after any re-exec so it runs in the final process image.
+installCrashCapture()
+
 struct CLIArguments {
     var workingDirectory: String?
     var name: String?
