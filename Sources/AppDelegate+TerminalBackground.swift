@@ -46,6 +46,9 @@ extension AppDelegate {
 
     @objc func handleRemoveTerminalBackground(_ sender: Any?) {
         guard let windowId = resolveWindowId(from: sender) else { return }
+        if let dir = terminalBackgroundDir(for: windowId) {
+            Self.setSavedTerminalBackground(hex: nil, forDir: dir)
+        }
         customTerminalBackgrounds.removeValue(forKey: windowId)
         terminalBackgroundObservations.removeValue(forKey: windowId)?.invalidate()
         resetTerminalBackgroundReapplyBreaker(windowId: windowId)
@@ -61,6 +64,9 @@ extension AppDelegate {
               let windowId = colorPanelWindowId else { return }
         let color = panel.color.usingColorSpace(.sRGB) ?? panel.color
         customTerminalBackgrounds[windowId] = color
+        if let dir = terminalBackgroundDir(for: windowId) {
+            Self.setSavedTerminalBackground(hex: color.hexString(), forDir: dir)
+        }
         resetTerminalBackgroundReapplyBreaker(windowId: windowId)
         applyTerminalBackground(windowId: windowId)
     }
@@ -78,6 +84,31 @@ extension AppDelegate {
         let wrapped = NSMenuItem()
         wrapped.representedObject = windowId
         handleRemoveTerminalBackground(wrapped)
+    }
+
+    // MARK: - Durable per-directory persistence
+
+    private static let terminalBgByDirKey = "terminalBackgroundsByDir"
+
+    /// Saved custom terminal background (hex) for a working directory, or nil.
+    /// Keyed by directory — the same key sessions are identified by elsewhere
+    /// (danger flag, open docs) — so the color survives closing and reopening
+    /// a session rather than only an explicit Save & Quit.
+    static func savedTerminalBackgroundHex(forDir dir: String) -> String? {
+        let map = UserDefaults.standard.dictionary(forKey: terminalBgByDirKey) as? [String: String] ?? [:]
+        return map[dir]
+    }
+
+    /// Persists (hex non-nil) or clears (hex nil) the custom background for a dir.
+    static func setSavedTerminalBackground(hex: String?, forDir dir: String) {
+        var map = UserDefaults.standard.dictionary(forKey: terminalBgByDirKey) as? [String: String] ?? [:]
+        if let hex { map[dir] = hex } else { map.removeValue(forKey: dir) }
+        UserDefaults.standard.set(map, forKey: terminalBgByDirKey)
+    }
+
+    /// Working directory backing a window, used to key the persisted color.
+    func terminalBackgroundDir(for windowId: UUID) -> String? {
+        windowConfigs[windowId]?.workingDirectory
     }
 
     // MARK: - Persistence / reapply

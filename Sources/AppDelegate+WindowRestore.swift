@@ -52,10 +52,9 @@ extension AppDelegate {
             storedConfig: config
         )
 
-        if let hex = config.customBackgroundHex, let color = NSColor(hex: hex) {
-            customTerminalBackgrounds[windowId] = color
-            scheduleRestoredBackgroundApply(windowId: windowId, attemptsRemaining: 40)
-        }
+        // Custom terminal background is now applied inside installWindow from
+        // the durable per-directory store (with legacy snapshot migration), so
+        // no separate handling is needed here.
 
         // Reopen markdown tabs that were open when the app last quit, and
         // prime the pending-scroll map so the first render of each doc

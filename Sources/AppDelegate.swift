@@ -275,6 +275,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionName: resolvedName,
             sidebarVisible: sidebarState.isVisible
         )
+        // Durable per-directory custom terminal background — survives closing
+        // and reopening a session, not just Save & Quit. Prefer the per-dir
+        // store; fall back to a legacy savedWindows snapshot value and migrate
+        // it into the per-dir store so it persists going forward.
+        if let hex = Self.savedTerminalBackgroundHex(forDir: dir) ?? storedConfig?.customBackgroundHex,
+           let color = NSColor(hex: hex) {
+            customTerminalBackgrounds[windowId] = color
+            if Self.savedTerminalBackgroundHex(forDir: dir) == nil {
+                Self.setSavedTerminalBackground(hex: hex, forDir: dir)
+            }
+            scheduleRestoredBackgroundApply(windowId: windowId, attemptsRemaining: 40)
+        }
+
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
         print("[claude-terminal] Window \(windowId) (session \(sessionId), dir \(dir), opts: \(opts ?? "none"))")
         return (windowId, tabState)
