@@ -5,21 +5,18 @@ enum HookInstaller {
         .appendingPathComponent(".claude-terminal/hooks")
 
     /// Absolute path to the claude-terminal-hook executable inside the app bundle.
-    /// Claude Code hooks invoke this via the command field in ~/.claude/settings.json.
-    ///
-    /// Resolved via executableURL, not bundleURL: when launched through the
-    /// /usr/local/bin/claude-terminal symlink, Bundle.main.bundleURL falls back
-    /// to /usr/local/bin (Foundation can't find Contents/Info.plist relative to
-    /// the symlink), which would write a bogus hook path into ~/.claude/settings.json.
-    private static var helperBinaryPath: String {
-        let exe = (Bundle.main.executableURL ?? Bundle.main.bundleURL).resolvingSymlinksInPath()
-        let bundle = exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return bundle.appendingPathComponent("Contents/Resources/claude-terminal-hook").path
+    /// Claude Code hooks invoke this via the command field in ~/.claude/settings.json,
+    /// and the sidebar-bridge mod via CLAUDE_TERMINAL_HOOK.
+    static var helperBinaryPath: String {
+        AppBundlePaths.resources.appendingPathComponent("claude-terminal-hook").path
     }
 
-    static func installIfNeeded() {
+    /// In `.mods` mode the sidebar-bridge mod delivers the tool and turn-end
+    /// events, so settings.json keeps only the events it does not cover. The
+    /// statusLine entry is installed in both modes.
+    static func installIfNeeded(mode: ClaudeIntegrationMode) {
         removeLegacyPythonScripts()
-        configureClaudeSettings()
+        configureClaudeSettings(mode: mode)
         writeStandaloneUninstaller()
     }
 
@@ -37,11 +34,11 @@ enum HookInstaller {
         }
     }
 
-    private static func configureClaudeSettings() {
+    private static func configureClaudeSettings(mode: ClaudeIntegrationMode) {
         let helper = helperBinaryPath
         let hookCommand = "\"\(helper)\" hook"
         let statusLineCommand = "\"\(helper)\" statusline"
-        let desiredHooks = buildDesiredHooks(command: hookCommand)
+        let desiredHooks = buildDesiredHooks(command: hookCommand, mode: mode)
 
         ClaudeSettings.mutate { settings in
             var existingHooks = settings["hooks"] as? [String: Any] ?? [:]
@@ -79,14 +76,18 @@ enum HookInstaller {
         return (entry["command"] as? String)?.contains("claude-terminal") == true
     }
 
-    private static func buildDesiredHooks(command: String) -> [String: [[String: Any]]] {
+    /// Events the sidebar-bridge mod sends in `.mods` mode, from `tool.call` and
+    /// `turn.complete`. Installing them here too would run each one twice.
+    private static let modDeliveredEvents: Set<String> = ["PreToolUse", "PostToolUse", "Stop"]
+
+    private static func buildDesiredHooks(command: String, mode: ClaudeIntegrationMode) -> [String: [[String: Any]]] {
         let entry: [String: Any] = [
             "matcher": "",
             "hooks": [
                 ["type": "command", "command": command, "timeout": 5] as [String: Any]
             ],
         ]
-        return [
+        let all: [String: [[String: Any]]] = [
             "SessionStart": [entry],
             "UserPromptSubmit": [entry],
             "PreToolUse": [entry],
@@ -98,6 +99,8 @@ enum HookInstaller {
             "TaskCompleted": [entry],
             "Notification": [entry],
         ]
+        guard mode == .mods else { return all }
+        return all.filter { !modDeliveredEvents.contains($0.key) }
     }
 
     /// Copy a standalone uninstall script to ~/.claude-terminal/uninstall.sh

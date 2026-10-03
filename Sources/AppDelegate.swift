@@ -64,7 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = GhosttyApp.shared
         NSApp.setActivationPolicy(.regular)
         AppearanceMode.current().apply()
-        HookInstaller.installIfNeeded()
+        let (mode, version) = ClaudeCodeIntegration.detectMode(claudePath: claudePath, environment: userShellEnvironment)
+        claudeIntegrationMode = mode
+        print("[claude-terminal] Claude Code \(version?.description ?? "unknown version"): \(mode.rawValue) integration")
+        HookInstaller.installIfNeeded(mode: mode)
         Self.pruneStaleFiles()
         startCrashReporting()
         let notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
@@ -398,6 +401,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     var claudePath: String = "claude"
+    /// Picked at launch from `claude --version`; see ClaudeCodeIntegration.
+    var claudeIntegrationMode: ClaudeIntegrationMode = .classicHooks
     var userShellEnvironment: [String: String]?
 
 

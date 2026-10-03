@@ -1,0 +1,6 @@
+{
+  "name": "sidebar-bridge",
+  "version": "0.1.0",
+  "description": "Forwards Claude Code session events to the claude-terminal sidebar.",
+  "author": { "name": "claude-terminal" }
+}
