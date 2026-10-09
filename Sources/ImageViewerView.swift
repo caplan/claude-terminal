@@ -48,7 +48,6 @@ struct ImageViewerView: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         var currentPath: String?
 
-        private var fd: Int32 = -1
         private var source: DispatchSourceFileSystemObject?
         private let queue = DispatchQueue(label: "org.claire.claude-terminal.image-viewer", qos: .utility)
 
@@ -77,7 +76,6 @@ struct ImageViewerView: NSViewRepresentable {
                 guard let self else { return }
                 let f = open(path, O_EVTONLY)
                 guard f >= 0 else { return }
-                self.fd = f
                 let src = DispatchSource.makeFileSystemObjectSource(
                     fileDescriptor: f,
                     eventMask: [.write, .extend, .rename, .delete],
@@ -100,10 +98,10 @@ struct ImageViewerView: NSViewRepresentable {
                         }
                     }
                 }
-                src.setCancelHandler { [weak self] in
-                    guard let self, self.fd >= 0 else { return }
-                    close(self.fd); self.fd = -1
-                }
+                // The source owns `f`. A shared fd property let the old
+                // source's cancel handler, queued behind the new watch, close
+                // the new fd and leak the old one on every atomic save.
+                src.setCancelHandler { close(f) }
                 src.resume()
                 self.source = src
             }

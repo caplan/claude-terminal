@@ -48,7 +48,6 @@ struct MarkdownViewerView: NSViewRepresentable {
         private var isHarnessLoaded = false
         private var pendingSource: String?
         private var hasAppliedRestoreScroll = false
-        private var fileDescriptor: Int32 = -1
         private var dispatchSource: DispatchSourceFileSystemObject?
         private let watchQueue = DispatchQueue(label: "org.claire.claude-terminal.md-viewer", qos: .utility)
         private let tabId: UUID
@@ -155,7 +154,6 @@ struct MarkdownViewerView: NSViewRepresentable {
                 guard let self else { return }
                 let fd = open(path, O_EVTONLY)
                 guard fd >= 0 else { return }
-                self.fileDescriptor = fd
                 let src = DispatchSource.makeFileSystemObjectSource(
                     fileDescriptor: fd,
                     eventMask: [.write, .rename, .delete, .extend],
@@ -177,13 +175,8 @@ struct MarkdownViewerView: NSViewRepresentable {
                         DispatchQueue.main.async { self.renderFromDisk() }
                     }
                 }
-                src.setCancelHandler { [weak self] in
-                    guard let self else { return }
-                    if self.fileDescriptor >= 0 {
-                        close(self.fileDescriptor)
-                        self.fileDescriptor = -1
-                    }
-                }
+                // The source owns `fd`; see SessionMonitor.startDispatchSource.
+                src.setCancelHandler { close(fd) }
                 src.resume()
                 self.dispatchSource = src
             }

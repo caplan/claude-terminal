@@ -80,7 +80,6 @@ struct TranscriptSnapshot: Equatable {
 /// file writes, seeking only the new bytes since the last read.
 final class TranscriptTailer {
     private let queue = DispatchQueue(label: "org.claire.claude-terminal.transcript", qos: .utility)
-    private var fd: Int32 = -1
     private var source: DispatchSourceFileSystemObject?
     private var retryTimer: DispatchSourceTimer?
     private var offset: UInt64 = 0
@@ -118,7 +117,6 @@ final class TranscriptTailer {
 
     deinit {
         source?.cancel()
-        if fd >= 0 { close(fd) }
     }
 
     func watch(path: String) {
@@ -158,7 +156,6 @@ final class TranscriptTailer {
         source = nil
         retryTimer?.cancel()
         retryTimer = nil
-        if fd >= 0 { close(fd); fd = -1 }
         offset = 0
         lineBuffer.removeAll(keepingCapacity: false)
     }
@@ -169,7 +166,6 @@ final class TranscriptTailer {
             scheduleRetry(path: path)
             return
         }
-        fd = newFd
         if seekToEnd {
             let end = lseek(newFd, 0, SEEK_END)
             offset = end < 0 ? 0 : UInt64(end)
@@ -191,7 +187,6 @@ final class TranscriptTailer {
             guard f >= 0 else { return }
             self.retryTimer?.cancel()
             self.retryTimer = nil
-            self.fd = f
             self.offset = 0
             self.drain(path: path)
             self.startDispatchSource(fd: f, path: path)
@@ -219,10 +214,8 @@ final class TranscriptTailer {
             }
             self.drain(path: path)
         }
-        src.setCancelHandler { [weak self] in
-            guard let self else { return }
-            if self.fd >= 0 { close(self.fd); self.fd = -1 }
-        }
+        // The source owns `fd`; see SessionMonitor.startDispatchSource.
+        src.setCancelHandler { close(fd) }
         src.resume()
         source = src
     }

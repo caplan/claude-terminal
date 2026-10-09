@@ -14,7 +14,6 @@ final class SessionMonitor: ObservableObject {
     private let workingDirectory: String?
     private var overriddenName: String?
 
-    private var fileDescriptor: Int32 = -1
     private var dispatchSource: DispatchSourceFileSystemObject?
     private var retryTimer: DispatchSourceTimer?
     private var pollTimer: DispatchSourceTimer?
@@ -144,10 +143,6 @@ final class SessionMonitor: ObservableObject {
         pollTimer = nil
         dispatchSource?.cancel()
         dispatchSource = nil
-        if fileDescriptor >= 0 {
-            close(fileDescriptor)
-            fileDescriptor = -1
-        }
         transcriptTailer.stop()
         watchedTranscriptPath = nil
     }
@@ -207,7 +202,6 @@ final class SessionMonitor: ObservableObject {
             scheduleRetry()
             return
         }
-        fileDescriptor = fd
         readAndDecode()
         startDispatchSource(fd: fd)
     }
@@ -229,13 +223,12 @@ final class SessionMonitor: ObservableObject {
             }
         }
 
-        source.setCancelHandler { [weak self] in
-            guard let self else { return }
-            if self.fileDescriptor >= 0 {
-                close(self.fileDescriptor)
-                self.fileDescriptor = -1
-            }
-        }
+        // The source owns `fd` and closes it here, after the source is done
+        // with it. It must not read a shared fd property: handleFileRemoved
+        // runs on every rename(2) of status.json (each statusLine poll), and a
+        // shared property is already reset or reassigned by the time this runs,
+        // which leaked one fd per poll until the app hit EMFILE.
+        source.setCancelHandler { close(fd) }
 
         source.resume()
         dispatchSource = source
@@ -244,13 +237,13 @@ final class SessionMonitor: ObservableObject {
     private func handleFileRemoved() {
         dispatchSource?.cancel()
         dispatchSource = nil
-        fileDescriptor = -1
         watchQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.attemptWatch()
         }
     }
 
     private func scheduleRetry() {
+        retryTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: watchQueue)
         timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
         timer.setEventHandler { [weak self] in
@@ -259,7 +252,6 @@ final class SessionMonitor: ObservableObject {
             if fd >= 0 {
                 self.retryTimer?.cancel()
                 self.retryTimer = nil
-                self.fileDescriptor = fd
                 self.readAndDecode()
                 self.startDispatchSource(fd: fd)
             }
