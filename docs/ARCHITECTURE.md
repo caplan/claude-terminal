@@ -85,7 +85,7 @@ The helper binary (`Sources/Hook/main.swift`) has two entry points:
 
 Concurrency: the helper binary and the Swift side both write `status.json`. Atomicity comes from acquiring an `flock(LOCK_EX)` on a sibling `.status.lock` file for the read-modify-write, then a POSIX `rename(2)` from a temp file (`FileManager.moveItem` silently drops the overwrite, so `rename(2)` is the correct primitive).
 
-Retention: `~/.claude-terminal/sessions/<uuid>/` directories accumulate so the menu-bar popover can list past sessions across runs. `AppDelegate.pruneStaleFiles` (launch-time) keeps the newest 100 dirs modified within 30 days, and additionally removes any dir whose recorded `workingDirectory` has been deleted on disk. The popover (`SessionListViewModel.scanPastSessions`) also filters out missing-cwd entries at read time so deleted projects disappear immediately, before the next launch's prune.
+Retention: `~/.claude-terminal/sessions/<uuid>/` directories accumulate so the menu-bar popover can list past sessions across runs. `AppDelegate.pruneStaleFiles` (launch-time) keeps the newest 100 dirs modified within 30 days, and additionally removes any dir whose recorded `workingDirectory` has been deleted on disk. The popover (`SessionListViewModel.scanPastSessions`) also filters out missing-cwd entries at read time so deleted projects disappear immediately, before the next launch's prune. The same launch prune keeps the newest 10 MetricKit reports in `diagnostics/`, deletes a leftover `debug.log` in a Release build with `CT_DEBUG_LOG` unset, removes `*.sb-*` temp files older than an hour (interrupted atomic writes), and halves `~/Library/Logs/claude-terminal-exits.log` once it passes 256 KB.
 
 ### Hook diagnostics
 
