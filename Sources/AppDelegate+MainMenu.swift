@@ -149,7 +149,7 @@ extension AppDelegate {
     @objc func uninstallApp() {
         let alert = NSAlert()
         alert.messageText = "Uninstall Claude Terminal?"
-        alert.informativeText = "This will remove:\n\n• The app from /Applications\n• ~/.claude-terminal/ (session data & hooks)\n• ~/.local/bin/claude-terminal symlink\n• Claude Code hook/statusLine entries from ~/.claude/settings.json\n• App preferences\n\nThis cannot be undone."
+        alert.informativeText = "This will remove:\n\n• The app from /Applications\n• ~/.claude-terminal/ (session data)\n• ~/.local/bin/claude-terminal symlink\n• App preferences\n\nThis cannot be undone."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Uninstall")
         alert.addButton(withTitle: "Cancel")
@@ -160,15 +160,9 @@ extension AppDelegate {
         let home = fm.homeDirectoryForCurrentUser.path
         var failures: [String] = []
 
-        if !scrubClaudeSettingsJSON() {
-            failures.append("~/.claude/settings.json could not be cleaned — open it manually and remove any command containing 'claude-terminal'.")
-        }
         if !removeClaudeTerminalSymlinks(home: home, fm: fm) {
             failures.append("~/.local/bin/claude-terminal could not be removed.")
         }
-        // Session data cleanup happens last so the standalone uninstall
-        // script (written at ~/.claude-terminal/uninstall.sh) stays around
-        // as a fallback if something upstream failed.
         do {
             if fm.fileExists(atPath: "\(home)/.claude-terminal") {
                 try fm.removeItem(atPath: "\(home)/.claude-terminal")
@@ -226,45 +220,6 @@ extension AppDelegate {
             try? fm.removeItem(atPath: legacy)
         }
         return ok
-    }
-
-    /// Removes any hooks entry whose command mentions "claude-terminal" and
-    /// drops the top-level statusLine if it points at our binary. Returns
-    /// true if the file was cleaned (or already clean); false if it was
-    /// unparseable and still contains claude-terminal references.
-    @discardableResult
-    private func scrubClaudeSettingsJSON() -> Bool {
-        let fm = FileManager.default
-        // If the file doesn't exist, there's nothing to scrub — succeed.
-        if !fm.fileExists(atPath: ClaudeSettings.path.path) { return true }
-
-        // If the file is present but unparseable, flag failure — we'd
-        // rather tell the user than silently leave stale hooks behind.
-        guard let data = fm.contents(atPath: ClaudeSettings.path.path),
-              (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil else {
-            return false
-        }
-
-        ClaudeSettings.mutate { settings in
-            if var hooks = settings["hooks"] as? [String: Any] {
-                for (event, value) in hooks {
-                    guard var entries = value as? [[String: Any]] else { continue }
-                    entries.removeAll { entry in
-                        if let hookList = entry["hooks"] as? [[String: Any]] {
-                            return hookList.contains { ($0["command"] as? String)?.contains("claude-terminal") == true }
-                        }
-                        return (entry["command"] as? String)?.contains("claude-terminal") == true
-                    }
-                    hooks[event] = entries.isEmpty ? nil : entries
-                }
-                settings["hooks"] = hooks.isEmpty ? nil : hooks
-            }
-            if let sl = settings["statusLine"] as? [String: Any],
-               (sl["command"] as? String)?.contains("claude-terminal") == true {
-                settings.removeValue(forKey: "statusLine")
-            }
-        }
-        return true
     }
 
     @objc func toggleSidebar() {

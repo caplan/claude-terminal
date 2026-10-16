@@ -55,6 +55,11 @@ targets:
     preBuildScripts:
       - script: '"${PROJECT_DIR}/scripts/ensure-ghosttykit.sh"'
         name: Build GhosttyKit
+    postBuildScripts:
+      # The mod's tests run with `claude plugin test`; they are not part of it.
+      - script: 'rm -f "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/sidebar-bridge-mod/hooks/"*.test.ts'
+        name: Strip mod tests
+        basedOnDependencyAnalysis: false
 
   claude-terminal-hook:
     type: tool

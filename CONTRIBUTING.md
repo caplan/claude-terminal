@@ -36,6 +36,17 @@ Regenerate the Xcode project after editing `project.yml`:
 xcodegen generate
 ```
 
+### The sidebar-bridge mod
+
+`Resources/sidebar-bridge-mod/` is the Claude Code mod that feeds the sidebar. Check it after each change, and again when Claude Code updates:
+
+```bash
+claude plugin validate Resources/sidebar-bridge-mod
+claude plugin test Resources/sidebar-bridge-mod
+```
+
+The tests (`hooks/*.test.ts`) are stripped from the app bundle at build time. `ClaudeCodeVersion.minimum` in `Sources/ClaudeCodeIntegration.swift` is the oldest Claude Code the mod is checked against: raise it when the mod starts to use a newer event or field.
+
 ## Bumping GhosttyKit
 
 `scripts/ensure-ghosttykit.sh` pulls `GhosttyKit.xcframework.tar.gz` from the [manaflow-ai/ghostty](https://github.com/manaflow-ai/ghostty) release pipeline at tag `xcframework-<sha>`, verifies the SHA-256 against `scripts/ghosttykit-checksums.txt`, extracts to `~/.cache/claude-terminal/ghosttykit/<sha>/`, and symlinks the framework into the project root.
@@ -107,16 +118,17 @@ CLAUDE.md                 — instructions for Claude Code when working in this 
 docs/
   ARCHITECTURE.md         — architecture deep dive
 Sources/                  — Swift sources (AppKit app + hook binary)
-  Hook/                   — claude-terminal-hook helper binary
+  Hook/                   — claude-terminal-hook helper binary, run by the mod
 Resources/
   Info.plist
   Assets.xcassets         — app icon
   ghostty/                — Ghostty runtime resources
   markdown-viewer/        — bundled JS/CSS for the inline markdown tab
+  sidebar-bridge-mod/     — the Claude Code mod each session loads (claude plugin test / validate)
 scripts/
   release.sh              — notarize + sign + ship
   ensure-ghosttykit.sh    — download pinned GhosttyKit.xcframework
-  uninstall.sh            — user-invokable uninstaller (kept in sync with Sources/StandaloneUninstallScript.swift, which the app writes to ~/.claude-terminal/uninstall.sh on launch as a drag-to-Trash fallback)
+  uninstall.sh            — uninstaller; also removes settings.json entries from versions before 0.43
 project.yml               — XcodeGen project config
 appcast.xml               — Sparkle feed
 ```

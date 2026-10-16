@@ -34,11 +34,9 @@ struct ContentView: View {
         // but it does shave latency between Claude finishing a step and us
         // seeing the bytes.
         config.environmentVariables["CLAUDE_CODE_EAGER_FLUSH"] = "1"
-        if AppDelegate.shared?.claudeIntegrationMode == .mods {
-            let userPluginDirs = AppDelegate.shared?.userShellEnvironment?["CLAUDE_CODE_PLUGIN_DIRS"]
-            for (key, value) in ClaudeCodeIntegration.sessionEnvironment(existingPluginDirs: userPluginDirs) {
-                config.environmentVariables[key] = value
-            }
+        let userPluginDirs = AppDelegate.shared?.userShellEnvironment?["CLAUDE_CODE_PLUGIN_DIRS"]
+        for (key, value) in ClaudeCodeIntegration.sessionEnvironment(existingPluginDirs: userPluginDirs) {
+            config.environmentVariables[key] = value
         }
         if let userEnv = AppDelegate.shared?.userShellEnvironment {
             for (key, value) in userEnv {

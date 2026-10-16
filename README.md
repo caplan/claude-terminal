@@ -12,10 +12,10 @@ Built on [Ghostty](https://ghostty.org)'s terminal engine.
 2. Open the DMG and drag **claude-terminal** to `/Applications`.
 3. Launch it. Updates arrive automatically via Sparkle.
 
-Requires macOS 14 and the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code/setup):
+Requires macOS 14 and the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code/setup) 2.1.301 or newer. The sidebar gets its data from a Claude Code mod that the app loads into each session it starts, so it changes nothing in `~/.claude/settings.json`. To update Claude Code:
 
 ```bash
-npm install -g @anthropic-ai/claude-code
+claude update
 ```
 
 ## Your first session
@@ -93,7 +93,7 @@ If the app is already running, the CLI opens a new window in the same process ra
 
 ## Notifications
 
-macOS notifications fire when Claude needs your attention — a permission request, an `AskUserQuestion`, or any other `Notification` hook event from Claude Code. They only fire when the app is in the background, so you won't get double-pinged while you're already looking at it. Toggle them in **Settings → Notifications**.
+macOS notifications fire when Claude waits on you for a permission request. They only fire when the app is in the background, so you won't get double-pinged while you're already looking at it. Toggle them in **Settings → Notifications**.
 
 ## Keyboard shortcuts
 
@@ -111,13 +111,11 @@ macOS notifications fire when Claude needs your attention — a permission reque
 
 ## Uninstall
 
-**claude-terminal** menu → **Uninstall Claude Terminal…** removes the app from `/Applications`, deletes `~/.claude-terminal/`, strips the claude-terminal hook and statusLine entries from `~/.claude/settings.json`, removes the CLI symlink, and clears app preferences.
+**claude-terminal** menu → **Uninstall Claude Terminal…** removes the app from `/Applications`, deletes `~/.claude-terminal/`, removes the CLI symlink, and clears app preferences.
 
-If you already dragged the app to Trash without using the menu, the Claude Code hook entries still reference a missing binary. Run the standalone uninstaller the app drops on every launch:
+Dragging the app to Trash is also safe. The app changes nothing outside `~/.claude-terminal/` and its preferences.
 
-```bash
-bash ~/.claude-terminal/uninstall.sh
-```
+Versions before 0.43 added hook and statusLine entries to `~/.claude/settings.json`. Launching 0.43 or newer once removes them. If you removed an old version without that, run `scripts/uninstall.sh` from this repository.
 
 ## Contributing
 

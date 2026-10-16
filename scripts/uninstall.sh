@@ -1,8 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 set -euo pipefail
 
 # Find the app by looking at where this script lives, or common locations
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${0:A:h}"
 APP_PATH=""
 
 # If script is inside the .app bundle
@@ -10,7 +10,7 @@ if [[ "$SCRIPT_DIR" == *"claude-terminal.app"* ]]; then
     APP_PATH="${SCRIPT_DIR%%claude-terminal.app/*}claude-terminal.app"
 # If script is in the repo scripts/ dir, look for installed app
 elif [[ -d "$SCRIPT_DIR/../claude-terminal.app" ]]; then
-    APP_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/claude-terminal.app"
+    APP_PATH="${SCRIPT_DIR:h}/claude-terminal.app"
 else
     # Search common locations
     for candidate in \
@@ -24,6 +24,8 @@ else
     done
 fi
 
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+
 echo "Claude Terminal Uninstaller"
 echo "==========================="
 echo ""
@@ -33,19 +35,13 @@ if [[ -n "$APP_PATH" ]]; then
 else
     echo "  • claude-terminal.app (not found)"
 fi
-echo "  • ~/.claude-terminal/ (session data & hooks)"
+echo "  • ~/.claude-terminal/ (session data)"
 echo "  • ~/.local/bin/claude-terminal (CLI symlink)"
-echo "  • Claude Code hook/statusLine entries from ~/.claude/settings.json"
+echo "  • Claude Code hook/statusLine entries an older version left in ~/.claude/settings.json"
 echo "  • App preferences (org.claire.claude-terminal)"
 echo ""
-read -p "Proceed? [y/N] " -n 1 -r
+read -q "REPLY?Proceed? [y/N] " || { echo ""; echo "Cancelled."; exit 0; }
 echo ""
-
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Cancelled."
-    exit 0
-fi
-
 echo ""
 
 # Remove the app
@@ -54,7 +50,7 @@ if [[ -n "$APP_PATH" && -d "$APP_PATH" ]]; then
     rm -rf "$APP_PATH"
 fi
 
-# Remove session data and hooks
+# Remove session data
 if [[ -d "$HOME/.claude-terminal" ]]; then
     echo "Removing ~/.claude-terminal/..."
     rm -rf "$HOME/.claude-terminal"
@@ -66,60 +62,31 @@ if [[ -L "$HOME/.local/bin/claude-terminal" ]] || [[ -f "$HOME/.local/bin/claude
     rm -f "$HOME/.local/bin/claude-terminal"
 fi
 
-# Clean up ~/.claude/settings.json
-CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+# Current versions write nothing to settings.json: the sidebar-bridge mod loads
+# per session. Versions before 0.43 added hook and statusLine entries, which the
+# app removes at launch. This covers a person who never launched a newer one.
 if [[ -f "$CLAUDE_SETTINGS" ]]; then
-    echo "Cleaning Claude Code settings..."
-    python3 - "$CLAUDE_SETTINGS" <<'PY'
-import json, sys
-
-path = sys.argv[1]
-with open(path) as f:
-    settings = json.load(f)
-
-changed = False
-
-# Remove hooks that reference claude-terminal
-hooks = settings.get("hooks", {})
-for event in list(hooks.keys()):
-    entries = hooks[event]
-    if not isinstance(entries, list):
-        continue
-    filtered = []
-    for entry in entries:
-        hook_list = entry.get("hooks", [])
-        if isinstance(hook_list, list) and any("claude-terminal" in (h.get("command", "") or "") for h in hook_list):
-            changed = True
-            continue
-        if "claude-terminal" in (entry.get("command", "") or ""):
-            changed = True
-            continue
-        filtered.append(entry)
-    if filtered:
-        hooks[event] = filtered
-    else:
-        del hooks[event]
-        changed = True
-
-if not hooks and "hooks" in settings:
-    del settings["hooks"]
-    changed = True
-elif changed:
-    settings["hooks"] = hooks
-
-# Remove statusLine if it references claude-terminal
-sl = settings.get("statusLine", {})
-if isinstance(sl, dict) and "claude-terminal" in (sl.get("command", "") or ""):
-    del settings["statusLine"]
-    changed = True
-
-if changed:
-    with open(path, "w") as f:
-        json.dump(settings, f, indent=4, sort_keys=True)
-    print("  Removed claude-terminal entries from settings.json")
-else:
-    print("  No claude-terminal entries found in settings.json")
-PY
+    JQ_SCRUB='
+      def ours: tostring | test("claude-terminal");
+      (if .hooks then
+        .hooks |= (with_entries(.value |= map(select(ours | not)))
+                   | with_entries(select(.value | length > 0)))
+        | if .hooks == {} then del(.hooks) else . end
+      else . end)
+      | if (.statusLine // {} | ours) then del(.statusLine) else . end'
+    if ! command -v jq >/dev/null; then
+        echo "  jq not found: remove any entry containing 'claude-terminal' from $CLAUDE_SETTINGS by hand."
+    elif grep -q "claude-terminal" "$CLAUDE_SETTINGS"; then
+        echo "Cleaning Claude Code settings..."
+        tmp="$CLAUDE_SETTINGS.claude-terminal.tmp"
+        if jq "$JQ_SCRUB" "$CLAUDE_SETTINGS" > "$tmp"; then
+            mv -f "$tmp" "$CLAUDE_SETTINGS"
+            echo "  Removed claude-terminal entries from settings.json"
+        else
+            rm -f "$tmp"
+            echo "  Could not parse $CLAUDE_SETTINGS: remove any entry containing 'claude-terminal' by hand."
+        fi
+    fi
 fi
 
 # Remove preferences

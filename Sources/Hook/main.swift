@@ -1,9 +1,10 @@
 import Foundation
 
-// claude-terminal-hook: embedded helper binary invoked by Claude Code hooks
-// (subcommand `hook`) and statusLine (subcommand `statusline`). Reads JSON
-// from stdin, updates ~/.claude-terminal/sessions/<id>/status.json, and
-// writes a compact status line to stdout for the `statusline` subcommand.
+// claude-terminal-hook: embedded helper binary run by the sidebar-bridge mod
+// (Resources/sidebar-bridge-mod). Subcommand `hook` takes one event, named as
+// the classic Claude Code hook it stands for; `statusline` takes the usage
+// figures. Each reads JSON from stdin and updates
+// ~/.claude-terminal/sessions/<id>/status.json.
 
 // MARK: - Entry point
 
@@ -236,7 +237,7 @@ func runHook() {
     case "SubagentStop":             handleSubagentStop(&state, event: event)
     case "TaskCreated":              handleTaskCreated(&state, event: event)
     case "TaskCompleted":            handleTaskCompleted(&state, event: event)
-    case "Notification":             handleNotification(&state)
+    case "Notification":             handleNotification(&state, event: event)
     default:                         break
     }
 
@@ -550,11 +551,15 @@ func handleTaskCompleted(_ state: inout [String: Any], event: [String: Any]) {
     state["tasks"] = tasks
 }
 
-func handleNotification(_ state: inout [String: Any]) {
+/// Claude Code is waiting on the person. A permission prompt arrives mid-tool,
+/// so it keeps status and the tool on screen; any other kind (an idle prompt)
+/// means the turn is over.
+func handleNotification(_ state: inout [String: Any], event: [String: Any]) {
+    state["needsInput"] = true
+    guard (event["notification_type"] as? String) != "permission_prompt" else { return }
     state["status"] = "idle"
     state["currentToolName"] = NSNull()
     state["toolDetail"] = NSNull()
-    state["needsInput"] = true
 }
 
 func readHiddenAgents() -> Set<String> {
@@ -679,32 +684,18 @@ func runStatusLine() {
         state["sessionName"] = sname
     }
 
-    // Pull request: Claude Code emits a `pr` block on the statusline payload
-    // when an open PR exists for the current branch. Drop the field once the
-    // PR closes/merges so the sidebar reflects current branch state.
+    // Pull request: a `pr` block names the open PR for the current branch, and
+    // `pr: null` says there is none. The sidebar-bridge mod has no native
+    // source for it and sends no key, which leaves the field as it was.
     if let pr = data["pr"] as? [String: Any],
        let num = (pr["number"] as? NSNumber)?.intValue {
         var info: [String: Any] = ["number": num]
         if let url = pr["url"] as? String, !url.isEmpty { info["url"] = url }
         if let rs = pr["review_state"] as? String, !rs.isEmpty { info["reviewState"] = rs }
         state["pullRequest"] = info
-    } else {
+    } else if data["pr"] is NSNull {
         state.removeValue(forKey: "pullRequest")
     }
 
     writeState(state)
-
-    // Output a compact status line to stdout for the terminal. Claude Code
-    // shows this below the prompt. Keep short.
-    var parts: [String] = []
-    if let model = state["modelName"] as? String, !model.isEmpty { parts.append(model) }
-    if let cost = state["cost"] as? [String: Any],
-       let usd = (cost["totalCostUsd"] as? NSNumber)?.doubleValue, usd > 0 {
-        parts.append(String(format: "$%.2f", max(0, usd)))
-    }
-    if let ctx = state["contextUsage"] as? [String: Any],
-       let pct = (ctx["usedPercentage"] as? NSNumber)?.intValue, pct > 0 {
-        parts.append("\(pct)%")
-    }
-    print(parts.joined(separator: "  "))
 }

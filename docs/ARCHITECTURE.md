@@ -2,7 +2,7 @@
 
 ## Overview
 
-claude-terminal is a multi-window macOS AppKit application that embeds Ghostty's terminal engine via `GhosttyKit.xcframework`. Each window runs one Claude Code session with a live SwiftUI sidebar. A small compiled helper binary handles Claude Code's hook + statusLine integration.
+claude-terminal is a multi-window macOS AppKit application that embeds Ghostty's terminal engine via `GhosttyKit.xcframework`. Each window runs one Claude Code session with a live SwiftUI sidebar. A Claude Code mod, loaded into each session, feeds the sidebar through a small compiled helper binary.
 
 Bundle ID: `org.claire.claude-terminal`.
 
@@ -29,7 +29,8 @@ MenuBarController.swift     → NSStatusItem + NSPanel for the menu-bar session 
 MenuBarPopoverView.swift    → SwiftUI grid of session cards for the menu-bar popup
 SessionListViewModel.swift  → aggregates active + past sessions (live updates)
 TooltipWindow.swift         → borderless NSPanel for instant card hover tooltips
-HookInstaller.swift         → writes Claude Code hook + statusLine entries into ~/.claude/settings.json
+ClaudeCodeIntegration.swift → requires Claude Code 2.1.301+, builds each session's mod environment
+LegacyHookCleanup.swift     → removes the settings.json entries and scripts older versions installed
 JiraTicketDetector.swift    → detects Jira ticket from branch name, fetches title via jira CLI
 FaviconLoader.swift         → derives a project favicon from the working directory
 PreferencesView.swift       → Settings window
@@ -43,17 +44,46 @@ Types.swift                 → stub types/protocols expected by GhosttyTerminal
 Hook/main.swift             → claude-terminal-hook helper binary (hook + statusline subcommands)
 ```
 
+`Resources/sidebar-bridge-mod/` holds the Claude Code mod each session loads (a TypeScript hooks module, its state contract and its tests).
+
 ## Session monitoring
 
-Each window launches Claude Code with `CLAUDE_TERMINAL_SESSION_ID` set. The per-window state lives in `~/.claude-terminal/sessions/<uuid>/status.json`, written by two entry points into the helper binary (`Sources/Hook/main.swift`):
+Each window launches Claude Code with `CLAUDE_TERMINAL_SESSION_ID` set and the bundled `sidebar-bridge` mod loaded through `CLAUDE_CODE_PLUGIN_DIRS`. The app writes nothing to `~/.claude/settings.json`. At launch it runs `claude --version` and will not open a session on a build older than `ClaudeCodeVersion.minimum`, because the mod needs that build's events.
 
-1. **`claude-terminal-hook hook`** — invoked on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`, `SubagentStop`, `TaskCreated`, `TaskCompleted`, `Notification`. Tracks status, current tool, active subagents, tasks, and tool-call latency. Clears `activeTools` on `Stop` and `UserPromptSubmit`. Subagents are removed only by their own `SubagentStop` so background agents survive across turns; `SessionStart` is the cold reset for everything *except* `documents` (which are sticky).
+### The sidebar-bridge mod
 
-2. **`claude-terminal-hook statusline`** — Claude Code polls this every 3s. Merges context window, cumulative cost, model name, and derived network metrics.
+The mod (`Resources/sidebar-bridge-mod/hooks/register.ts`) turns Claude Code's native function-hook events into the stdin JSON of the classic hooks, and runs the helper binary with it through `$.process.run`. The helper's handlers therefore stay keyed by the classic names:
+
+| Native event | Sent as |
+|---|---|
+| `session.start` (first per process) | `SessionStart`, `source: startup` |
+| `session.end` with `reason: clear` | `SessionStart`, `source: clear` |
+| `prompt.submit` from the person (`origin.kind` `composer` or `bridge`) | `UserPromptSubmit` |
+| `tool.call`, before and after `next` | `PreToolUse`, then `PostToolUse` or `PostToolUseFailure` |
+| `tool.call` of `TaskCreate`, from its result | `TaskCreated` |
+| `agent.spawn`, from its answer | `SubagentStart` |
+| `turn.complete` | `Stop` on the main loop, `SubagentStop` with `agentId` |
+| `tool.check` with `ask`, still unanswered after 4 s | `Notification`, `permission_prompt` |
+| `session.measure`, plus a 3 s timer | the `statusline` payload, from `$.session.usage()` |
+
+The mod hooks no `classic.*` event. On machines with managed settings, and for Team and Enterprise organizations, the built-in `cc-plugin-sec-default` plugin skips user-tier plugins on those events.
+
+Two choices need care:
+
+- **The ask wait.** `tool.check` reports `ask` before the permission mode settles it. In auto mode the classifier then answers in about 1.5 s with no dialog. No native event reports the dialog itself, and no settings file reliably names the mode. So the mod waits 4 s, and the `tool.call` hook cancels the wait once the call is answered.
+- **State that must survive a hot reload.** A reload runs `register` and `session.start` again. The "already started" flag and the summed turn time therefore live in `$.state` (contract: `types/index.d.ts`). Module variables would reset.
+
+No native source gives the line counts, session name, pull request or permission mode, so the sidebar shows none of them. TaskCompleted has no native event either: a task's status still updates through the `TaskUpdate` tool input that `PreToolUse` carries.
+
+The helper binary (`Sources/Hook/main.swift`) has two entry points:
+
+1. **`claude-terminal-hook hook`** tracks status, current tool, active subagents, tasks, and tool-call latency. It clears `activeTools` on `Stop` and `UserPromptSubmit`. Subagents are removed only by their own `SubagentStop`, so background agents survive across turns. `SessionStart` is the cold reset for everything *except* `documents` (which are sticky).
+
+2. **`claude-terminal-hook statusline`** merges context window, cumulative cost, model name, and derived network metrics.
 
 `SessionMonitor` (`Sources/SessionMonitor.swift`) watches the JSON file via `DispatchSource` and decodes changes into `@Published var state`. It also merges hook-reported docs with the persisted per-working-dir list (`~/.claude-terminal/docs-by-dir.json`), filters out files that no longer exist, and persists the union.
 
-Concurrency: the hook script and the Swift side both write `status.json`. Atomicity comes from acquiring an `flock(LOCK_EX)` on a sibling `.status.lock` file for the read-modify-write, then a POSIX `rename(2)` from a temp file (`FileManager.moveItem` silently drops the overwrite, so `rename(2)` is the correct primitive).
+Concurrency: the helper binary and the Swift side both write `status.json`. Atomicity comes from acquiring an `flock(LOCK_EX)` on a sibling `.status.lock` file for the read-modify-write, then a POSIX `rename(2)` from a temp file (`FileManager.moveItem` silently drops the overwrite, so `rename(2)` is the correct primitive).
 
 Retention: `~/.claude-terminal/sessions/<uuid>/` directories accumulate so the menu-bar popover can list past sessions across runs. `AppDelegate.pruneStaleFiles` (launch-time) keeps the newest 100 dirs modified within 30 days, and additionally removes any dir whose recorded `workingDirectory` has been deleted on disk. The popover (`SessionListViewModel.scanPastSessions`) also filters out missing-cwd entries at read time so deleted projects disappear immediately, before the next launch's prune.
 
@@ -94,7 +124,7 @@ A small template-rendered GitHub octocat SVG (`Resources/Assets.xcassets/github.
 
 ## Cost accounting
 
-`cost.total_cost_usd` from the statusLine payload is **cumulative for the entire CLI lifetime** — it spans `--continue` resumes *and* `/clear`. We pass it through as-is on every poll except after `/clear`: when the SessionStart hook fires with `source: "clear"`, it stamps `_pendingCostReset` on `state`. The next `runStatusLine` consumes that flag, snapshots the current cumulative report into `_costBaseline`, and subsequent polls compute `displayed = reported - baseline` per-field. The baseline lives in `state` (status.json), so it persists across reopen; the persist file at `~/.claude-terminal/cost-by-session.json` therefore stores the post-baseline value, which is exactly what the sidebar wants to seed on reopen. Subtraction only — never sum a saved value on top of Claude Code's number; that path doubled cost on save+quit+relaunch (commit 0403696). See `Hook/main.swift:runStatusLine` and `handleSessionStart`.
+`cost.total_cost_usd` in the statusline payload (from `$.session.usage().cost.usd`) is **cumulative for the entire CLI lifetime** — it spans `--continue` resumes *and* `/clear`. We pass it through as-is on every poll except after `/clear`: when the SessionStart hook fires with `source: "clear"`, it stamps `_pendingCostReset` on `state`. The next `runStatusLine` consumes that flag, snapshots the current cumulative report into `_costBaseline`, and subsequent polls compute `displayed = reported - baseline` per-field. The baseline lives in `state` (status.json), so it persists across reopen; the persist file at `~/.claude-terminal/cost-by-session.json` therefore stores the post-baseline value, which is exactly what the sidebar wants to seed on reopen. Subtraction only — never sum a saved value on top of Claude Code's number; that path doubled cost on save+quit+relaunch (commit 0403696). See `Hook/main.swift:runStatusLine` and `handleSessionStart`.
 
 ## Portal system (critical)
 
@@ -130,7 +160,7 @@ This is why `ContentView` keeps the terminal view mounted even when a markdown t
 - `GhosttyTerminalView.swift` — vendored from Ghostty's macOS app, ~12.6K lines. Treat as read-only.
 - `GhosttyConfig.swift`, `GhosttyConfigFile.swift` — vendored, unmodified.
 - `Types.swift` — ~660 lines of stub types/protocols that `GhosttyTerminalView` imports (`Workspace`, `TabManager`, `Panel`, `Notification`, `Split`, etc.). Neutralises unused infrastructure.
-- `main.swift`, `AppDelegate.swift`, `ContentView.swift`, the `Sidebar*.swift` family, `SessionMonitor.swift`, `SessionState.swift`, `HookInstaller.swift`, `Hook/main.swift`, the document-viewer stack — written from scratch for claude-terminal.
+- `main.swift`, `AppDelegate.swift`, `ContentView.swift`, the `Sidebar*.swift` family, `SessionMonitor.swift`, `SessionState.swift`, `ClaudeCodeIntegration.swift`, `Hook/main.swift`, the sidebar-bridge mod, the document-viewer stack — written from scratch for claude-terminal.
 
 ## Conventions
 

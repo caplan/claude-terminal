@@ -1,26 +1,18 @@
-import Foundation
+import AppKit
 
-/// How claude-terminal receives session events from Claude Code.
-///
-/// Chosen once at launch from `claude --version`. Builds that load function-hook
-/// mods get the bundled `sidebar-bridge` mod through `CLAUDE_CODE_PLUGIN_DIRS`
-/// on each session we launch. The mod sends tool start, tool end and turn end;
-/// `~/.claude/settings.json` keeps the statusLine and the low-frequency hooks
-/// whose classic input carries fields no native event has. Older builds keep
-/// every settings.json hook entry.
-enum ClaudeIntegrationMode: String {
-    case classicHooks = "classic"
-    case mods = "mods"
-}
-
+/// How claude-terminal receives session events from Claude Code: the bundled
+/// `sidebar-bridge` mod, loaded into each session we launch through
+/// `CLAUDE_CODE_PLUGIN_DIRS`. Nothing is written to `~/.claude/settings.json`.
 struct ClaudeCodeVersion: Comparable, CustomStringConvertible {
     let parts: [Int]
 
-    /// The first build the bundled mod was checked against
-    /// (`claude plugin validate`, plugin-authoring types 2.1.286).
-    static let minimumForMods = ClaudeCodeVersion(parts: [2, 1, 286])
+    /// The first build whose events carry everything the mod reads: `agentId`
+    /// on `turn.start` and `turn.complete`, `agent.spawn`'s agent id,
+    /// `session.measure` and `tool.check`. Checked with `claude plugin validate`
+    /// and `tsc` against that build's plugin-authoring types.
+    static let minimum = ClaudeCodeVersion(parts: [2, 1, 301])
 
-    /// Parses `claude --version` output, e.g. `2.1.287 (Claude Code)`.
+    /// Parses `claude --version` output, e.g. `2.1.301 (Claude Code)`.
     init?(versionOutput: String) {
         guard let token = versionOutput
             .split(whereSeparator: { $0.isWhitespace })
@@ -45,24 +37,8 @@ struct ClaudeCodeVersion: Comparable, CustomStringConvertible {
 }
 
 enum ClaudeCodeIntegration {
-    /// `defaults write org.claire.claude-terminal claudeIntegrationMode classic`
-    /// (or `mods`) pins the mode; anything else, or unset, means detect.
-    private static let overrideKey = "claudeIntegrationMode"
-
-    static func detectMode(claudePath: String, environment: [String: String]?) -> (ClaudeIntegrationMode, ClaudeCodeVersion?) {
-        let version = probeVersion(claudePath: claudePath, environment: environment)
-        if let raw = UserDefaults.standard.string(forKey: overrideKey),
-           let pinned = ClaudeIntegrationMode(rawValue: raw) {
-            return (pinned, version)
-        }
-        guard let version, version >= .minimumForMods, modDirectoryPath != nil else {
-            return (.classicHooks, version)
-        }
-        return (.mods, version)
-    }
-
     /// Runs `claude --version` with a timeout. nil when it fails, hangs or
-    /// prints something we can't parse; the caller then stays on classic hooks.
+    /// prints something we can't parse.
     static func probeVersion(claudePath: String, environment: [String: String]?) -> ClaudeCodeVersion? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: claudePath)
@@ -84,23 +60,61 @@ enum ClaudeCodeIntegration {
         return ClaudeCodeVersion(versionOutput: output)
     }
 
-    /// The `sidebar-bridge` plugin folder inside the app bundle.
-    static var modDirectoryPath: String? {
-        let path = AppBundlePaths.resources.appendingPathComponent("sidebar-bridge-mod").path
-        return FileManager.default.fileExists(atPath: "\(path)/.claude-plugin/plugin.json") ? path : nil
+    /// Blocks launch until the CLI at `claudePath` is new enough. Below the
+    /// minimum the sidebar would get no events, so the person updates Claude
+    /// Code, picks another binary, or quits.
+    static func requireSupportedVersion(claudePath: inout String, environment: [String: String]?) {
+        while true {
+            let version = probeVersion(claudePath: claudePath, environment: environment)
+            if let version, version >= .minimum { return }
+
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Claude Code \(ClaudeCodeVersion.minimum) or newer is required"
+            let found = version.map { "Claude Code \($0)" } ?? "a Claude Code version claude-terminal could not read"
+            alert.informativeText = """
+                \(claudePath) is \(found).
+
+                claude-terminal gets its sidebar data from a Claude Code mod, which needs \(ClaudeCodeVersion.minimum) or newer.
+
+                Update with: claude update
+                """
+            alert.addButton(withTitle: "Try Again")
+            alert.addButton(withTitle: "Choose claude…")
+            alert.addButton(withTitle: "Quit")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                continue
+            case .alertSecondButtonReturn:
+                if let path = AppDelegate.shared?.askUserForClaudePath() { claudePath = path }
+            default:
+                NSApp.terminate(nil)
+                return
+            }
+        }
     }
 
-    /// Environment for a Claude Code session in `.mods` mode.
+    /// The `sidebar-bridge` plugin folder inside the app bundle.
+    static var modDirectoryPath: String {
+        AppBundlePaths.resources.appendingPathComponent("sidebar-bridge-mod").path
+    }
+
+    /// The claude-terminal-hook executable inside the app bundle, which the mod
+    /// runs (as `CLAUDE_TERMINAL_HOOK`) to write status.json.
+    static var helperBinaryPath: String {
+        AppBundlePaths.resources.appendingPathComponent("claude-terminal-hook").path
+    }
+
+    /// Environment for each Claude Code session the app launches.
     static func sessionEnvironment(existingPluginDirs: String?) -> [String: String] {
-        guard let modDir = modDirectoryPath else { return [:] }
-        var dirs = [modDir]
+        var dirs = [modDirectoryPath]
         if let existingPluginDirs, !existingPluginDirs.isEmpty {
             dirs.append(existingPluginDirs)
         }
         return [
             "CLAUDE_CODE_PLUGIN_DIRS": dirs.joined(separator: ":"),
             "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
-            "CLAUDE_TERMINAL_HOOK": HookInstaller.helperBinaryPath,
+            "CLAUDE_TERMINAL_HOOK": helperBinaryPath,
         ]
     }
 }
