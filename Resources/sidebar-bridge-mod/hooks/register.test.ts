@@ -166,13 +166,7 @@ test('the status line carries model and cumulative cost, and no context window',
   // The context card reads the breakdown alone; the old summary is gone.
   expect(line && 'context_window' in line).toEqual(false)
   // No session.start ran here, so no start time is known yet: duration is 0.
-  expect(line?.cost).toEqual({
-    total_cost_usd: 0.25,
-    total_duration_ms: 0,
-    total_api_duration_ms: 0,
-    total_lines_added: 0,
-    total_lines_removed: 0,
-  })
+  expect(line?.cost).toEqual({ total_cost_usd: 0.25, total_duration_ms: 0, total_api_duration_ms: 0 })
 })
 
 const prSent = (sent: Sent[]) =>
@@ -256,22 +250,6 @@ test("duration counts from this process's start, not a resumed session's first l
   await clock.advance(90_000)
   await measure($)
   expect(lastLine(sent)?.cost.total_duration_ms).toEqual(90_000)
-})
-
-test('lines added and removed sum over Edit and Write patches', async ($, on) => {
-  const sent = helper(on)
-  mock.clock(on)
-  const measure = measured(on)
-  // Edit: 1 line removed, 3 added. Write of a new file: 2 added.
-  const patches: Record<string, unknown> = {
-    e1: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 5, lines: [' one', '-two', '+two-a', '+two-b', '+two-c', ' three'] }],
-    w1: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+x', '+y'] }],
-  }
-  on('tool.call', ($, e) => ({ result: { structuredPatch: patches[e.tool_use_id] }, isError: false }))
-  await $.tool.call({ tool: 'Edit', tool_use_id: 'e1', file_path: '/a.swift', old_string: 'a', new_string: 'b' })
-  await $.tool.call({ tool: 'Write', tool_use_id: 'w1', file_path: '/b.swift', content: 'x' })
-  await measure($)
-  expect(lastLine(sent)?.cost).toMatchObject({ total_lines_added: 5, total_lines_removed: 1 })
 })
 
 type SentBreakdown = {

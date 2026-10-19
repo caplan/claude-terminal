@@ -69,9 +69,7 @@ final class SessionMonitor: ObservableObject {
             cost: CostInfo(
                 totalCostUsd: 0.0847,
                 totalDurationMs: 185_000,
-                totalApiDurationMs: 23_400,
-                totalLinesAdded: 156,
-                totalLinesRemoved: 23
+                totalApiDurationMs: 23_400
             ),
             currentToolName: "Read",
             toolDetail: "Sources/SidebarView.swift",

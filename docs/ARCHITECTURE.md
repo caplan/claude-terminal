@@ -78,7 +78,6 @@ Two choices need care:
 Some statusLine figures have no `$` call, so the mod keeps them in `$.state`:
 
 - **Duration** counts from this process's first `session.start` (and from `/clear`). `usage.startedAt` is a resumed session's *first* launch, so with `--continue` it reported days.
-- **Lines added and removed** count the `+` and `-` lines of each Edit, Write, MultiEdit and NotebookEdit result's `structuredPatch`. The optional `gitDiff` field would say the same, but the engine leaves it out of most results.
 
 ### Context breakdown, Refresh and Compact
 

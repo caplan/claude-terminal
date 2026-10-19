@@ -7,12 +7,6 @@ export type SidebarBridgeApiMs = number
 /** When this process's session began, in $.clock.now() milliseconds. */
 export type SidebarBridgeStartedAt = number
 
-/** Lines added and removed this session, which no $ call reports. */
-export type SidebarBridgeTotals = {
-  linesAdded: number
-  linesRemoved: number
-}
-
 /** One row of the context breakdown, as /context lists it. */
 export type SidebarBridgeContextRow = {
   name: string
@@ -42,8 +36,6 @@ declare module 'claude-code' {
       apiMs: SidebarBridgeApiMs
       /** Set at the first session.start and at /clear. */
       startedAt: SidebarBridgeStartedAt
-      /** Line counts from file edits. */
-      totals: SidebarBridgeTotals
       /** The last full breakdown; null until one has run. */
       breakdown: SidebarBridgeBreakdown
     }

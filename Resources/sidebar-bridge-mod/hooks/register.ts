@@ -6,7 +6,6 @@ import type {
   SidebarBridgeContextRow,
   SidebarBridgeStarted,
   SidebarBridgeStartedAt,
-  SidebarBridgeTotals,
 } from '../types'
 
 // Loaded in each session claude-terminal launches, via CLAUDE_CODE_PLUGIN_DIRS.
@@ -66,14 +65,6 @@ const apiMs = atom({ plugin: 'sidebar-bridge', key: 'apiMs' } as const, 0 as Sid
 // first launch, which made `--continue` report days of duration; the
 // statusLine's total_duration_ms counted from this process's start.
 const startedAt = atom({ plugin: 'sidebar-bridge', key: 'startedAt' } as const, 0 as SidebarBridgeStartedAt)
-
-// Lines added and removed, summed from each Edit and Write call's
-// structuredPatch: the statusLine reported them and $.session.usage() does not.
-const ZERO_TOTALS: SidebarBridgeTotals = {
-  linesAdded: 0,
-  linesRemoved: 0,
-}
-const totals = atom({ plugin: 'sidebar-bridge', key: 'totals' } as const, ZERO_TOTALS)
 
 // The /context breakdown. A full one asks the API to count each tool and
 // memory file, about one request per tool, so it runs at session start, after
@@ -158,27 +149,6 @@ async function takeRequest($: EngineInterface): Promise<string | undefined> {
   }
 }
 
-// The file tools whose result carries a structuredPatch.
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
-
-// Counts a result's `+` and `-` patch lines. The optional gitDiff's additions
-// and deletions would say the same, but the engine leaves gitDiff out of most
-// results; structuredPatch is always there for an edit that changed a file.
-function lineCounts(result: unknown): { added: number; removed: number } | undefined {
-  const hunks = (result as { structuredPatch?: unknown } | undefined)?.structuredPatch
-  if (!Array.isArray(hunks)) return undefined
-  let added = 0
-  let removed = 0
-  for (const hunk of hunks) {
-    for (const line of (hunk as { lines?: unknown }).lines as unknown[] ?? []) {
-      if (typeof line !== 'string') continue
-      if (line.startsWith('+')) added++
-      else if (line.startsWith('-')) removed++
-    }
-  }
-  return { added, removed }
-}
-
 // The open pull request for the session's branch. No native source names it,
 // so `gh pr view` asks GitHub. It is a network call, so it runs on its own,
 // slower poll, and again after a Bash call that created or changed a PR.
@@ -227,22 +197,18 @@ async function sendPr($: EngineInterface) {
 
 // The statusLine payload, built from $.session.usage(). Cost is the session's
 // cumulative total, as total_cost_usd was, so the binary's /clear baseline still
-// subtracts; the two durations are cumulative the same way. The line totals
-// come from `totals`, the pull request from sendPr, the context breakdown from
-// sendBreakdown. No native source gives Claude Code's own session name.
+// subtracts; the two durations are cumulative the same way. The pull request
+// comes from sendPr, the context breakdown from sendBreakdown. No native source gives Claude Code's own session name.
 async function statusLine($: EngineInterface) {
   const usage = await $.session.usage()
   const begun = await read($, startedAt)
   const durationMs = begun > 0 ? Math.max(0, (await $.clock.now()) - begun) : 0
-  const t = await read($, totals)
   await send($, 'statusline', {
     model: { id: await $.session.model() },
     cost: {
       total_cost_usd: usage.cost?.usd ?? 0,
       total_duration_ms: durationMs,
       total_api_duration_ms: await read($, apiMs),
-      total_lines_added: t.linesAdded,
-      total_lines_removed: t.linesRemoved,
     },
   })
 }
@@ -322,7 +288,6 @@ export const register: Register = on => {
       await update($, apiMs, () => 0)
       const now = await $.clock.now()
       await update($, startedAt, () => now)
-      await update($, totals, () => ZERO_TOTALS)
       await hook($, { hook_event_name: 'SessionStart', source: 'clear', model: await $.session.model() })
       startPolls($)
       void measureBreakdown($)
@@ -380,16 +345,6 @@ export const register: Register = on => {
     if (tool === 'Bash' && !result.isError && result.result) {
       const op = (result.result as { gitOperation?: { pr?: unknown; push?: unknown; branch?: unknown } }).gitOperation
       if (op?.pr || op?.push || op?.branch) void sendPr($)
-    }
-    if (EDIT_TOOLS.has(tool) && !result.isError) {
-      const lines = lineCounts(result.result)
-      if (lines) {
-        await update($, totals, t => ({
-          ...t,
-          linesAdded: t.linesAdded + lines.added,
-          linesRemoved: t.linesRemoved + lines.removed,
-        }))
-      }
     }
     // TaskCreated: the task's id exists only in the tool's result.
     if (tool === 'TaskCreate' && !result.isError && result.result) {

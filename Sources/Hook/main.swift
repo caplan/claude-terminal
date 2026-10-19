@@ -608,16 +608,12 @@ func runStatusLine() {
         let repUsd = (cost["total_cost_usd"] as? NSNumber)?.doubleValue ?? 0
         let repDur = (cost["total_duration_ms"] as? NSNumber)?.intValue ?? 0
         let repApiDur = (cost["total_api_duration_ms"] as? NSNumber)?.intValue ?? 0
-        let repAdd = (cost["total_lines_added"] as? NSNumber)?.intValue ?? 0
-        let repRem = (cost["total_lines_removed"] as? NSNumber)?.intValue ?? 0
 
         if (state["_pendingCostReset"] as? Bool) == true {
             state["_costBaseline"] = [
                 "totalCostUsd": repUsd,
                 "totalDurationMs": repDur,
                 "totalApiDurationMs": repApiDur,
-                "totalLinesAdded": repAdd,
-                "totalLinesRemoved": repRem,
             ] as [String: Any]
             state.removeValue(forKey: "_pendingCostReset")
         }
@@ -626,20 +622,14 @@ func runStatusLine() {
         let bUsd = (baseline["totalCostUsd"] as? NSNumber)?.doubleValue ?? 0
         let bDur = (baseline["totalDurationMs"] as? NSNumber)?.intValue ?? 0
         let bApiDur = (baseline["totalApiDurationMs"] as? NSNumber)?.intValue ?? 0
-        let bAdd = (baseline["totalLinesAdded"] as? NSNumber)?.intValue ?? 0
-        let bRem = (baseline["totalLinesRemoved"] as? NSNumber)?.intValue ?? 0
 
         let dispUsd = max(0, repUsd - bUsd)
         let dispDur = max(0, repDur - bDur)
         let dispApiDur = max(0, repApiDur - bApiDur)
-        let dispAdd = max(0, repAdd - bAdd)
-        let dispRem = max(0, repRem - bRem)
         let totalCost: [String: Any] = [
             "totalCostUsd": dispUsd,
             "totalDurationMs": dispDur,
             "totalApiDurationMs": dispApiDur,
-            "totalLinesAdded": dispAdd,
-            "totalLinesRemoved": dispRem,
         ]
         state["cost"] = totalCost
 

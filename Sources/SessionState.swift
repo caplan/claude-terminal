@@ -50,8 +50,6 @@ struct CostInfo: Codable, Equatable {
     var totalCostUsd: Double
     var totalDurationMs: Int
     var totalApiDurationMs: Int
-    var totalLinesAdded: Int
-    var totalLinesRemoved: Int
 }
 
 struct SubagentInfo: Codable, Identifiable, Equatable {
