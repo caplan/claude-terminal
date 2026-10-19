@@ -29,11 +29,24 @@ const started = atom({ plugin: 'sidebar-bridge', key: 'started' } as const, fals
 
 let helper: string | undefined
 
-async function send($: EngineInterface, subcommand: 'hook' | 'statusline', payload: Record<string, unknown>) {
+// Every helper run takes the same flock on .status.lock, so they finish one at
+// a time however many are started. Runs started faster than they finish (the
+// 3 s poll, PR lookups, the breakdown, a burst of tool calls) used to queue on
+// that lock, and the one at the back passed TIMEOUT_MS and was killed. Each
+// send now waits for the one before it, so a run's TIMEOUT_MS counts its own
+// work and not the queue's.
+let lastSend: Promise<void> = Promise.resolve()
+
+function send($: EngineInterface, subcommand: 'hook' | 'statusline', payload: Record<string, unknown>) {
+  const run = lastSend.then(() => runHelper($, subcommand, payload))
+  lastSend = run
+  return run
+}
+
+async function runHelper($: EngineInterface, subcommand: 'hook' | 'statusline', payload: Record<string, unknown>) {
   helper ??= await $.env.get('CLAUDE_TERMINAL_HOOK')
   if (!helper) return
   try {
-    // Awaited so events reach status.json in the order they happened.
     await $.process.run([helper, subcommand], {
       stdin: JSON.stringify({
         session_id: await $.session.id(),
@@ -247,9 +260,23 @@ async function serveRequest($: EngineInterface) {
   }
 }
 
+// One status poll at a time: a tick that finds the last one still queued
+// behind slow helper runs skips, as the next tick carries the same figures.
+let isPolling = false
+
+async function pollStatus($: EngineInterface) {
+  if (isPolling) return
+  isPolling = true
+  try {
+    await statusLine($)
+  } finally {
+    isPolling = false
+  }
+}
+
 function startPolls($: EngineInterface) {
   stopPolls()
-  timers.status = $.clock.every(STATUS_POLL_MS, () => void statusLine($))
+  timers.status = $.clock.every(STATUS_POLL_MS, () => void pollStatus($))
   timers.pr = $.clock.every(PR_POLL_MS, () => void sendPr($))
   timers.request = $.clock.every(REQUEST_POLL_MS, () => void serveRequest($))
 }

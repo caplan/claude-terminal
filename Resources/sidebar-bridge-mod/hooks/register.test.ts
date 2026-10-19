@@ -372,3 +372,33 @@ test("after a compact, the full count's Messages stands until a newer response",
   await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 'b' })
   expect(rowTokens(breakdowns(sent).at(-1), 'Messages')).toEqual(6000)
 })
+
+test('helper runs go one at a time, so a slow one cannot push the next past its timeout', async ($, on) => {
+  mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER, CLAUDE_TERMINAL_STATUS_DIR: '/status' })
+  const clock = mock.clock(on)
+  let inFlight = 0
+  let most = 0
+  const order: string[] = []
+  on('process.run', async ($, e) => {
+    if (e.argv[0] !== HELPER) return run({ exitCode: 0 })
+    inFlight++
+    most = Math.max(most, inFlight)
+    // Each run holds the status lock for 2 s.
+    await clock.sleep(2000)
+    order.push(JSON.parse(e.init?.stdin ?? '{}').hook_event_name ?? e.argv[1])
+    inFlight--
+    return run({ exitCode: 0 })
+  })
+  on('session.id', () => ({ value: 'cc-session' }))
+  on('session.cwd', () => ({ value: '/work' }))
+  on('tool.call', () => ({ result: { stdout: '' }, isError: false }))
+  // Two tool calls at once: four helper runs started together.
+  const calls = Promise.all([
+    $.tool.call({ tool: 'Bash', tool_use_id: 'p1', command: 'a' }),
+    $.tool.call({ tool: 'Bash', tool_use_id: 'p2', command: 'b' }),
+  ])
+  await clock.advance(10_000)
+  await calls
+  expect(most).toEqual(1)
+  expect(order).toHaveLength(4)
+})

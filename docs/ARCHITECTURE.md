@@ -68,6 +68,8 @@ The mod (`Resources/sidebar-bridge-mod/hooks/register.ts`) turns Claude Code's n
 | `gh pr view`, every 60 s and after a Bash call whose result reports a PR, push or branch change | the `statusline` payload's `pr` block |
 | `$.session.usage({ breakdown: 'full' })` at session start, after a compact and on Refresh; rebuilt after each turn | the `statusline` payload's `context_breakdown` |
 
+Every helper run takes the `flock` on `.status.lock`, so runs finish one at a time. The mod therefore chains its runs (`send` waits for the one before it), and the 3 s poll skips a tick while the last one is still pending. Without that, runs started faster than they finish queued on the lock, and the last in line passed its 5 s timeout and was killed.
+
 The mod hooks no `classic.*` event. On machines with managed settings, and for Team and Enterprise organizations, the built-in `cc-plugin-sec-default` plugin skips user-tier plugins on those events.
 
 Two choices need care:
