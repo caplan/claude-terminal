@@ -74,7 +74,13 @@ Two choices need care:
 - **The ask wait.** `tool.check` reports `ask` before the permission mode settles it. In auto mode the classifier then answers in about 1.5 s with no dialog. No native event reports the dialog itself, and no settings file reliably names the mode. So the mod waits 4 s, and the `tool.call` hook cancels the wait once the call is answered.
 - **State that must survive a hot reload.** A reload runs `register` and `session.start` again. The "already started" flag and the summed turn time therefore live in `$.state` (contract: `types/index.d.ts`). Module variables would reset.
 
-No native source gives the line counts, session name or permission mode, so the sidebar shows none of them. The pull request comes from `gh` instead: the mod runs `gh pr view` in the session's directory. When `gh` is missing, signed out or offline, the mod sends nothing and the card keeps the last PR it showed. TaskCompleted has no native event either: a task's status still updates through the `TaskUpdate` tool input that `PreToolUse` carries.
+Some statusLine figures have no `$` call, so the mod keeps them in `$.state`:
+
+- **Duration** counts from this process's first `session.start` (and from `/clear`). `usage.startedAt` is a resumed session's *first* launch, so with `--continue` it reported days.
+- **Output tokens** sum `turn.complete`'s `usage.output_tokens` over every loop. **Cache tokens** are the last main-loop turn's, as the statusLine's `current_usage` was.
+- **Lines added and removed** count the `+` and `-` lines of each Edit, Write, MultiEdit and NotebookEdit result's `structuredPatch`. The optional `gitDiff` field would say the same, but the engine leaves it out of most results.
+
+No native source gives Claude Code's own session name (`/rename`) or the permission mode, so the sidebar shows neither. The window title still comes from the app and from your own renames. The pull request comes from `gh` instead: the mod runs `gh pr view` in the session's directory. When `gh` is missing, signed out or offline, the mod sends nothing and the card keeps the last PR it showed. TaskCompleted has no native event either: a task's status still updates through the `TaskUpdate` tool input that `PreToolUse` carries.
 
 The helper binary (`Sources/Hook/main.swift`) has two entry points:
 

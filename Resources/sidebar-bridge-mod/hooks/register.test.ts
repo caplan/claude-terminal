@@ -13,7 +13,11 @@ const run = (r: Gh) => ({
 
 // Stands for the claude-terminal-hook binary: records what the mod sends.
 // `gh` answers as `gh pr view` would; by default the branch has no PR.
-function helper(on: On, gh: Gh = { exitCode: 1, stderr: 'no pull requests found for branch "main"' }): Sent[] {
+function helper(
+  on: On,
+  gh: Gh = { exitCode: 1, stderr: 'no pull requests found for branch "main"' },
+  usageStartedAt = 0,
+): Sent[] {
   const sent: Sent[] = []
   mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER })
   on('process.run', ($, e) => {
@@ -28,7 +32,7 @@ function helper(on: On, gh: Gh = { exitCode: 1, stderr: 'no pull requests found 
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.usage', () => ({
     value: {
-      startedAt: 0,
+      startedAt: usageStartedAt,
       context: { tokens: 1000, window: 200000, percent: 1 },
       rateLimits: [],
       cost: { usd: 0.25 },
@@ -124,8 +128,17 @@ test('the status line carries model, context and cumulative cost', async ($, on)
     used_percentage: 1,
     remaining_percentage: 99,
     total_input_tokens: 1000,
+    total_output_tokens: 0,
+    current_usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
   })
-  expect(line?.cost).toEqual({ total_cost_usd: 0.25, total_duration_ms: 5000, total_api_duration_ms: 0 })
+  // No session.start ran here, so no start time is known yet: duration is 0.
+  expect(line?.cost).toEqual({
+    total_cost_usd: 0.25,
+    total_duration_ms: 0,
+    total_api_duration_ms: 0,
+    total_lines_added: 0,
+    total_lines_removed: 0,
+  })
 })
 
 const prSent = (sent: Sent[]) =>
@@ -184,4 +197,64 @@ test('a Bash call with no git operation does not ask gh', async ($, on) => {
   await $.tool.call({ tool: 'Bash', tool_use_id: 'b5', command: 'echo hi' })
   await clock.settle()
   expect(prSent(sent)).toEqual([])
+})
+
+const lastLine = (sent: Sent[]) =>
+  sent.filter(s => s.subcommand === 'statusline' && 'cost' in s.payload).at(-1)?.payload as
+    | { context_window: Record<string, unknown>; cost: Record<string, unknown> }
+    | undefined
+
+// session.measure answered beneath the plugins; register it before the test
+// first calls $, and call measure() to raise one.
+function measured(on: On) {
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  return ($: { session: { measure: (e: { context: { tokens: number; window: number; percent: number }; rateLimits: never[]; changed: 'cost'[] }) => Promise<unknown> } }) =>
+    $.session.measure({ context: { tokens: 1000, window: 200000, percent: 1 }, rateLimits: [], changed: ['cost'] })
+}
+
+test("duration counts from this process's start, not a resumed session's first launch", async ($, on) => {
+  // usage.startedAt is days back, as for `claude --continue`.
+  const sent = helper(on, undefined, -10 * 86_400_000)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const measure = measured(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+  await clock.advance(90_000)
+  await measure($)
+  expect(lastLine(sent)?.cost.total_duration_ms).toEqual(90_000)
+})
+
+test('output tokens sum over turns; cache tokens are the last main turn', async ($, on) => {
+  const sent = helper(on)
+  mock.clock(on)
+  const measure = measured(on)
+  on('turn.complete', () => ({ text: '' }))
+  const base = { answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer' as const }
+  const usage = (out: number, read: number, made: number) => ({
+    input_tokens: 5, output_tokens: out, cache_read_input_tokens: read, cache_creation_input_tokens: made, model: 'm',
+  })
+  await $.turn.complete({ ...base, turnId: 'a', usage: usage(100, 4000, 50) })
+  await $.turn.complete({ ...base, turnId: 'b', agentId: 'sub', usage: usage(30, 9999, 9999) })
+  await $.turn.complete({ ...base, turnId: 'c', usage: usage(20, 5000, 10) })
+  await measure($)
+  expect(lastLine(sent)?.context_window).toMatchObject({
+    total_output_tokens: 150,
+    current_usage: { cache_read_input_tokens: 5000, cache_creation_input_tokens: 10 },
+  })
+})
+
+test('lines added and removed sum over Edit and Write patches', async ($, on) => {
+  const sent = helper(on)
+  mock.clock(on)
+  const measure = measured(on)
+  // Edit: 1 line removed, 3 added. Write of a new file: 2 added.
+  const patches: Record<string, unknown> = {
+    e1: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 5, lines: [' one', '-two', '+two-a', '+two-b', '+two-c', ' three'] }],
+    w1: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+x', '+y'] }],
+  }
+  on('tool.call', ($, e) => ({ result: { structuredPatch: patches[e.tool_use_id] }, isError: false }))
+  await $.tool.call({ tool: 'Edit', tool_use_id: 'e1', file_path: '/a.swift', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Write', tool_use_id: 'w1', file_path: '/b.swift', content: 'x' })
+  await measure($)
+  expect(lastLine(sent)?.cost).toMatchObject({ total_lines_added: 5, total_lines_removed: 1 })
 })
