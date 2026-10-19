@@ -81,10 +81,13 @@ async function measureBreakdown($: EngineInterface) {
   const b = usage.context.breakdown
   if (!b) return
   const now = await $.clock.now()
+  const messagesTokens = b.categories.find(c => c.name === MESSAGES)?.tokens ?? 0
   await update($, breakdown, () => ({
     rows: b.categories
       .filter(c => c.kind === 'used' && c.name !== MESSAGES)
       .map(c => ({ name: c.name, tokens: c.tokens, kind: c.kind })),
+    messagesTokens,
+    inputTokensAtMeasure: usage.context.tokens ?? null,
     windowTokens: b.rawMaxTokens,
     mcpTools: b.mcpTools.map(t => ({ name: t.name, server: t.serverName, tokens: t.tokens })),
     memoryFiles: b.memoryFiles.map(f => ({ path: f.path, tokens: f.tokens })),
@@ -93,16 +96,22 @@ async function measureBreakdown($: EngineInterface) {
   await sendBreakdown($)
 }
 
-// Sends the breakdown with Messages, Free space and the buffer for now. The
-// main context's input tokens (usage.context.tokens) are the conversation plus
-// the fixed rows, so Messages is what is left of them; before the first
-// response it is the full breakdown's own figure, 0.
+// Sends the breakdown with Messages, Free space and the buffer for now.
+//
+// usage.context.tokens is the last API response's input: the conversation plus
+// the fixed rows. Right after a compact no response has come back, so it is
+// absent or still the pre-compact figure; the full count made then is the only
+// true Messages. So the full count's Messages stands until the input tokens
+// move on from what they were when it ran, and after that Messages is what is
+// left of them once the fixed rows are taken out.
 async function sendBreakdown($: EngineInterface) {
   const b = await read($, breakdown)
   if (!b) return
   const usage = await $.session.usage()
   const fixed = b.rows.reduce((sum, r) => sum + r.tokens, 0)
-  const messages = Math.max(0, (usage.context.tokens ?? fixed) - fixed)
+  const input = usage.context.tokens
+  const isNewer = input !== undefined && input !== b.inputTokensAtMeasure
+  const messages = isNewer ? Math.max(0, input - fixed) : b.messagesTokens
   const buffer = Math.min(3000, b.windowTokens)
   const used = fixed + messages
   const rows: SidebarBridgeContextRow[] = [

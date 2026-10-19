@@ -34,8 +34,10 @@ const FULL_BREAKDOWN = {
 type Options = {
   gh?: Gh
   usageStartedAt?: number
-  /** The main context's input tokens, `usage.context.tokens`. */
-  contextTokens?: number
+  /** The main context's input tokens, `usage.context.tokens`; null leaves them out. */
+  contextTokens?: number | null
+  /** Read on each call, so a test can move the context mid-way. */
+  live?: { contextTokens: number | null; messagesTokens: number }
   /** What the app wrote to mod-request.json, or undefined for no file. */
   request?: { text: string }
 }
@@ -65,19 +67,27 @@ function helper(
   on('session.id', () => ({ value: 'cc-session' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.usage', ($, e) => ({
-    value: {
-      startedAt: usageStartedAt,
-      context: {
-        tokens: options.contextTokens ?? 1000,
-        window: 200000,
-        percent: 1,
-        ...(e?.breakdown ? { breakdown: FULL_BREAKDOWN } : {}),
+  on('session.usage', ($, e) => {
+    const tokens = options.live ? options.live.contextTokens : options.contextTokens === undefined ? 1000 : options.contextTokens
+    const messages = options.live?.messagesTokens ?? 0
+    const full = {
+      ...FULL_BREAKDOWN,
+      categories: FULL_BREAKDOWN.categories.map(c => (c.name === 'Messages' ? { ...c, tokens: messages } : c)),
+    }
+    return {
+      value: {
+        startedAt: usageStartedAt,
+        context: {
+          ...(tokens === null ? {} : { tokens }),
+          window: 200000,
+          percent: 1,
+          ...(e?.breakdown ? { breakdown: full } : {}),
+        },
+        rateLimits: [],
+        cost: { usd: 0.25 },
       },
-      rateLimits: [],
-      cost: { usd: 0.25 },
-    },
-  }))
+    }
+  })
   return sent
 }
 
@@ -284,12 +294,15 @@ test('a session start measures the breakdown and sends its rows, largest tools f
 })
 
 test('after a turn, Messages is the input tokens minus the fixed rows', async ($, on) => {
-  const sent = helper(on, undefined, 0, { contextTokens: 54000 + 20000 })
+  const live = { contextTokens: 54000 as number | null, messagesTokens: 0 }
+  const sent = helper(on, undefined, 0, { live })
   const clock = mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({ text: '' }))
   await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
   await clock.settle()
+  // The turn's response reports 20k more input than when the count ran.
+  live.contextTokens = 54000 + 20000
   await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 't' })
   const b = breakdowns(sent).at(-1)
   expect(rowTokens(b, 'Messages')).toEqual(20000)
@@ -328,4 +341,34 @@ test('a compact request compacts once and reports it running, then done', async 
   expect(compacts).toEqual(1)
   const flags = sent.filter(s => 'compacting' in s.payload).map(s => s.payload.compacting)
   expect(flags).toEqual([true, false])
+})
+
+test("after a compact, the full count's Messages stands until a newer response", async ($, on) => {
+  // Before: 200k of conversation on 54k of fixed rows.
+  const live = { contextTokens: 54000 + 200000 as number | null, messagesTokens: 200000 }
+  const sent = helper(on, undefined, 0, { live })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.complete', () => ({ text: '' }))
+  on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  expect(rowTokens(breakdowns(sent).at(-1), 'Messages')).toEqual(200000)
+
+  // The compact leaves a 4k summary. No response has come back yet, so the
+  // input tokens are absent; the full count made now is the true figure.
+  live.contextTokens = null
+  live.messagesTokens = 4000
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'long history', toolUses: [] }] })
+  await clock.settle()
+  expect(rowTokens(breakdowns(sent).at(-1), 'Messages')).toEqual(4000)
+
+  // A turn whose usage is still the pre-compact reading must not undo it.
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 'a' })
+  expect(rowTokens(breakdowns(sent).at(-1), 'Messages')).toEqual(4000)
+
+  // The next response reports 54k + 6k of input: Messages follows it.
+  live.contextTokens = 54000 + 6000
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 'b' })
+  expect(rowTokens(breakdowns(sent).at(-1), 'Messages')).toEqual(6000)
 })

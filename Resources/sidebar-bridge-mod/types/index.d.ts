@@ -16,11 +16,14 @@ export type SidebarBridgeContextRow = {
 
 /**
  * The last full /context breakdown: its fixed rows (everything but Messages,
- * Free space and the buffer) and the main context's input tokens when it ran,
- * so later turns can rebuild Messages from their own input tokens.
+ * Free space and the buffer), its own Messages count, and the main context's
+ * input tokens when it ran. Until a newer response reports other input tokens,
+ * the full count's Messages stands; after one, Messages is rebuilt from it.
  */
 export type SidebarBridgeBreakdown = {
   rows: SidebarBridgeContextRow[]
+  messagesTokens: number
+  inputTokensAtMeasure: number | null
   windowTokens: number
   mcpTools: { name: string; server: string; tokens: number }[]
   memoryFiles: { path: string; tokens: number }[]
