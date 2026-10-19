@@ -65,6 +65,7 @@ The mod (`Resources/sidebar-bridge-mod/hooks/register.ts`) turns Claude Code's n
 | `turn.complete` | `Stop` on the main loop, `SubagentStop` with `agentId` |
 | `tool.check` with `ask`, still unanswered after 4 s | `Notification`, `permission_prompt` |
 | `session.measure`, plus a 3 s timer | the `statusline` payload, from `$.session.usage()` |
+| `gh pr view`, every 60 s and after a Bash call whose result reports a PR, push or branch change | the `statusline` payload's `pr` block |
 
 The mod hooks no `classic.*` event. On machines with managed settings, and for Team and Enterprise organizations, the built-in `cc-plugin-sec-default` plugin skips user-tier plugins on those events.
 
@@ -73,7 +74,7 @@ Two choices need care:
 - **The ask wait.** `tool.check` reports `ask` before the permission mode settles it. In auto mode the classifier then answers in about 1.5 s with no dialog. No native event reports the dialog itself, and no settings file reliably names the mode. So the mod waits 4 s, and the `tool.call` hook cancels the wait once the call is answered.
 - **State that must survive a hot reload.** A reload runs `register` and `session.start` again. The "already started" flag and the summed turn time therefore live in `$.state` (contract: `types/index.d.ts`). Module variables would reset.
 
-No native source gives the line counts, session name, pull request or permission mode, so the sidebar shows none of them. TaskCompleted has no native event either: a task's status still updates through the `TaskUpdate` tool input that `PreToolUse` carries.
+No native source gives the line counts, session name or permission mode, so the sidebar shows none of them. The pull request comes from `gh` instead: the mod runs `gh pr view` in the session's directory. When `gh` is missing, signed out or offline, the mod sends nothing and the card keeps the last PR it showed. TaskCompleted has no native event either: a task's status still updates through the `TaskUpdate` tool input that `PreToolUse` carries.
 
 The helper binary (`Sources/Hook/main.swift`) has two entry points:
 

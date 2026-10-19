@@ -5,15 +5,23 @@ const HELPER = '/app/Contents/Resources/claude-terminal-hook'
 
 type Sent = { subcommand: string; payload: Record<string, unknown> }
 
+type Gh = { exitCode: number; stdout?: string; stderr?: string }
+
+const run = (r: Gh) => ({
+  value: { exitCode: r.exitCode, stdout: r.stdout ?? '', stderr: r.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false },
+})
+
 // Stands for the claude-terminal-hook binary: records what the mod sends.
-function helper(on: On): Sent[] {
+// `gh` answers as `gh pr view` would; by default the branch has no PR.
+function helper(on: On, gh: Gh = { exitCode: 1, stderr: 'no pull requests found for branch "main"' }): Sent[] {
   const sent: Sent[] = []
   mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER })
   on('process.run', ($, e) => {
+    if (e.argv[0] === 'gh') return run(gh)
     if (e.argv[0] === HELPER) {
       sent.push({ subcommand: e.argv[1] ?? '', payload: JSON.parse(e.init?.stdin ?? '{}') })
     }
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return run({ exitCode: 0 })
   })
   on('session.id', () => ({ value: 'cc-session' }))
   on('session.cwd', () => ({ value: '/work' }))
@@ -118,4 +126,62 @@ test('the status line carries model, context and cumulative cost', async ($, on)
     total_input_tokens: 1000,
   })
   expect(line?.cost).toEqual({ total_cost_usd: 0.25, total_duration_ms: 5000, total_api_duration_ms: 0 })
+})
+
+const prSent = (sent: Sent[]) =>
+  sent.filter(s => s.subcommand === 'statusline' && 'pr' in s.payload).map(s => s.payload.pr)
+
+const ghPr = (fields: Record<string, unknown>) => ({
+  exitCode: 0,
+  stdout: JSON.stringify({ number: 2566, url: 'https://github.com/o/r/pull/2566', state: 'OPEN', isDraft: false, reviewDecision: '', ...fields }),
+})
+
+test('a gh pr create in Bash sends the open PR with its review state', async ($, on) => {
+  const sent = helper(on, ghPr({ reviewDecision: 'CHANGES_REQUESTED' }))
+  const clock = mock.clock(on)
+  on('tool.call', () => ({
+    result: { stdout: '', gitOperation: { pr: { number: 2566, action: 'created' } } },
+    isError: false,
+  }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b1', command: 'gh pr create --fill' })
+  await clock.settle()
+  expect(prSent(sent)).toEqual([
+    { number: 2566, url: 'https://github.com/o/r/pull/2566', review_state: 'changes_requested' },
+  ])
+})
+
+test('a draft PR is sent as draft', async ($, on) => {
+  const sent = helper(on, ghPr({ isDraft: true, reviewDecision: 'APPROVED' }))
+  const clock = mock.clock(on)
+  on('tool.call', () => ({ result: { stdout: '', gitOperation: { push: { branch: 'f' } } }, isError: false }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b2', command: 'git push' })
+  await clock.settle()
+  expect(prSent(sent)).toEqual([{ number: 2566, url: 'https://github.com/o/r/pull/2566', review_state: 'draft' }])
+})
+
+test('a merged PR, or no PR, clears the card with pr: null', async ($, on) => {
+  const sent = helper(on, ghPr({ state: 'MERGED' }))
+  const clock = mock.clock(on)
+  on('tool.call', () => ({ result: { stdout: '', gitOperation: { pr: { number: 2566, action: 'merged' } } }, isError: false }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b3', command: 'gh pr merge' })
+  await clock.settle()
+  expect(prSent(sent)).toEqual([null])
+})
+
+test('when gh cannot answer, nothing is sent and the last PR stays', async ($, on) => {
+  const sent = helper(on, { exitCode: 4, stderr: 'To get started with GitHub CLI, please run: gh auth login' })
+  const clock = mock.clock(on)
+  on('tool.call', () => ({ result: { stdout: '', gitOperation: { pr: { number: 1, action: 'edited' } } }, isError: false }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b4', command: 'gh pr edit' })
+  await clock.settle()
+  expect(prSent(sent)).toEqual([])
+})
+
+test('a Bash call with no git operation does not ask gh', async ($, on) => {
+  const sent = helper(on, ghPr({}))
+  const clock = mock.clock(on)
+  on('tool.call', () => ({ result: { stdout: 'hi' }, isError: false }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b5', command: 'echo hi' })
+  await clock.settle()
+  expect(prSent(sent)).toEqual([])
 })

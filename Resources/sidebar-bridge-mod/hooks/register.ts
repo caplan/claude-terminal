@@ -55,10 +55,57 @@ const ASK_SETTLE_MS = 4000
 // adds to it.
 const apiMs = atom({ plugin: 'sidebar-bridge', key: 'apiMs' } as const, 0 as SidebarBridgeApiMs)
 
+// The open pull request for the session's branch. No native source names it,
+// so `gh pr view` asks GitHub. It is a network call, so it runs on its own,
+// slower poll, and again after a Bash call that created or changed a PR.
+const PR_POLL_MS = 60_000
+const PR_TIMEOUT_MS = 10_000
+
+// The statusLine `pr` block the binary reads: an object, or null for none.
+type PrBlock = { number: number; url: string; review_state: string } | null
+
+// What `gh pr view --json` prints for the fields asked.
+type GhPr = { number: number; url: string; state: string; isDraft: boolean; reviewDecision: string }
+
+// The sidebar's review labels: draft, approved, changes_requested, pending.
+function reviewState(pr: GhPr): string {
+  if (pr.isDraft) return 'draft'
+  switch (pr.reviewDecision) {
+    case 'APPROVED': return 'approved'
+    case 'CHANGES_REQUESTED': return 'changes_requested'
+    case 'REVIEW_REQUIRED': return 'pending'
+    default: return ''
+  }
+}
+
+// undefined when gh could not answer (not installed, signed out, offline):
+// the binary then keeps the PR it last saw. `gh pr view` exits 1 with "no pull
+// requests found" when the branch has none, which is a real answer.
+async function lookUpPr($: EngineInterface): Promise<PrBlock | undefined> {
+  try {
+    const { exitCode, stdout, stderr } = await $.process.run(
+      ['gh', 'pr', 'view', '--json', 'number,url,state,isDraft,reviewDecision'],
+      { timeoutMs: PR_TIMEOUT_MS },
+    )
+    if (exitCode !== 0) return /no pull requests found/i.test(stderr) ? null : undefined
+    const pr = JSON.parse(stdout) as GhPr
+    if (pr.state !== 'OPEN') return null
+    return { number: pr.number, url: pr.url, review_state: reviewState(pr) }
+  } catch {
+    return undefined
+  }
+}
+
+async function sendPr($: EngineInterface) {
+  const pr = await lookUpPr($)
+  if (pr !== undefined) await send($, 'statusline', { pr })
+}
+
 // The statusLine payload, built from $.session.usage(). Cost is the session's
 // cumulative total, as total_cost_usd was, so the binary's /clear baseline still
 // subtracts; the two durations are cumulative the same way. No native source
-// gives the line counts, session name or pull request, so they are left out.
+// gives the line counts or session name, so they are left out. The pull request
+// comes from sendPr.
 async function statusLine($: EngineInterface) {
   const usage = await $.session.usage()
   const { context } = usage
@@ -82,6 +129,7 @@ async function statusLine($: EngineInterface) {
 
 export const register: Register = on => {
   let poll: Timer | undefined
+  let prPoll: Timer | undefined
   // An "ask" verdict's wait, by tool_use_id, until the call is answered.
   const pendingAsks = new Map<string, Timer>()
 
@@ -95,13 +143,18 @@ export const register: Register = on => {
     }
     poll?.cancel()
     poll = $.clock.every(STATUS_POLL_MS, () => void statusLine($))
+    prPoll?.cancel()
+    prPoll = $.clock.every(PR_POLL_MS, () => void sendPr($))
     await statusLine($)
+    void sendPr($)
     return result
   })
 
   on('session.end', async ($, e, next) => {
     poll?.cancel()
     poll = undefined
+    prPoll?.cancel()
+    prPoll = undefined
     const result = await next(e)
     // /clear ends the session with no session.start after it. The binary's
     // SessionStart with source "clear" resets the sidebar and sets the cost
@@ -113,6 +166,7 @@ export const register: Register = on => {
       await update($, apiMs, () => 0)
       await hook($, { hook_event_name: 'SessionStart', source: 'clear', model: await $.session.model() })
       poll = $.clock.every(STATUS_POLL_MS, () => void statusLine($))
+      prPoll = $.clock.every(PR_POLL_MS, () => void sendPr($))
     }
     return result
   })
@@ -152,6 +206,12 @@ export const register: Register = on => {
       ...ids,
       tool_input: toolInput,
     })
+    // A Bash call that touched a PR (gh pr create, merge, ready, ...) or moved
+    // the branch reports it in gitOperation: look the PR up now, not in 60 s.
+    if (tool === 'Bash' && !result.isError && result.result) {
+      const op = (result.result as { gitOperation?: { pr?: unknown; push?: unknown; branch?: unknown } }).gitOperation
+      if (op?.pr || op?.push || op?.branch) void sendPr($)
+    }
     // TaskCreated: the task's id exists only in the tool's result.
     if (tool === 'TaskCreate' && !result.isError && result.result) {
       const { task } = result.result as { task?: { id: string; subject: string } }
