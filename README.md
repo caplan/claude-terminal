@@ -47,7 +47,7 @@ The sidebar is a set of cards. They appear and collapse as they become relevant,
 
 **Working directory.** Your cwd with a project favicon auto-loaded from the folder. A GitHub icon appears next to it when cwd is inside a git repo *and* GitHub's public status API reports an incident — hover for the summary, click to open status.github.com.
 
-**Context breakdown.** The Context card lists what fills the context window, as `/context` does: system prompt, tools, MCP tools, skills, memory files, messages and free space, with the MCP tools and memory files by size. **Refresh** counts it again (about one API request per tool). **Compact session** summarizes the conversation, as `/compact` does.
+**Context breakdown.** The Context card shows how full the context window is. Open **Details** to see what fills it, as `/context` does: system prompt, tools, MCP tools, skills, memory files, messages and free space, with the MCP tools and memory files by size. **Refresh** counts it again (about one API request per tool). **Compact session** summarizes the conversation, as `/compact` does.
 
 **Pull request.** Needs the [GitHub CLI](https://cli.github.com) (`gh`), signed in. When the current branch has an open PR, a card surfaces a GitHub-style state pill (green **Open**, gray **Draft**) and the PR number as a clickable link to GitHub. A right-aligned chip shows the review decision (`approved`, `changes requested`, `review pending`) when one is set. The data comes from Claude Code's statusline payload — no `gh` auth needed on the claude-terminal side.
 

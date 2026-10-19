@@ -17,6 +17,19 @@ struct SidebarView: View {
     /// in UserDefaults so it survives relaunches and is shared across windows
     /// (one global preference, not per-session — matches sidebar visibility).
     @AppStorage("documentsCollapsed") private var documentsCollapsed: Bool = false
+    /// The Context card's Details disclosure; SidebarContextBreakdown owns the
+    /// toggle. Read here so the layout budgets for the open height.
+    @AppStorage("contextDetailsExpanded") private var contextDetailsExpanded: Bool = false
+
+    /// The full Context card's height: header, percent line, bar, the Details
+    /// row and the buttons; with Details open, a row per category and the two
+    /// list headers too. Measured from a render: 126pt closed, 322pt open with
+    /// nine rows. The lists' own rows scroll the sidebar as before.
+    private var contextCardHeight: CGFloat {
+        let closed: CGFloat = 126
+        guard contextDetailsExpanded, let rows = state.contextBreakdown?.rows.count else { return closed }
+        return closed + CGFloat(rows) * 17 + 43
+    }
 
     private var state: SessionState { monitor.state }
 
@@ -161,7 +174,7 @@ struct SidebarView: View {
 
         // Fixed height below the docs area at the current collapse level.
         let netH: CGFloat = 12 + 80
-        let ctxH: CGFloat = state.contextBreakdown != nil ? 12 + (collapse >= 3 ? 44 : 144) : 0
+        let ctxH: CGFloat = state.contextBreakdown != nil ? 12 + (collapse >= 3 ? 44 : contextCardHeight) : 0
         let costH: CGFloat = state.cost != nil ? 12 + (collapse >= 2 ? 44 : 124) : 0
         let belowDocs = netH + ctxH + costH
 
@@ -201,7 +214,7 @@ struct SidebarView: View {
         let netSmall: CGFloat = 12 + 80
         let costFull: CGFloat = state.cost != nil ? 12 + 124 : 0
         let costSmall: CGFloat = state.cost != nil ? 12 + 44 : 0
-        let ctxFull: CGFloat = state.contextBreakdown != nil ? 12 + 144 : 0
+        let ctxFull: CGFloat = state.contextBreakdown != nil ? 12 + contextCardHeight : 0
         let ctxSmall: CGFloat = state.contextBreakdown != nil ? 12 + 44 : 0
 
         if fixed + netFull + ctxFull + costFull <= availableHeight { return 0 }

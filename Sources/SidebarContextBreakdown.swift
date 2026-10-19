@@ -1,13 +1,17 @@
 import SwiftUI
 
-/// The /context breakdown under the sidebar's Context card: a stacked bar, one
-/// row per category, the MCP tools and memory files behind two of them, and
-/// Refresh and Compact buttons that ask the session's mod to act.
+/// The /context breakdown under the sidebar's Context card: the percent used, a
+/// stacked bar, and Refresh and Compact buttons that ask the session's mod to
+/// act. A Details disclosure, closed by default, holds one row per category and
+/// the MCP tools and memory files behind two of them.
 struct SidebarContextBreakdown: View {
     let breakdown: ContextBreakdown
     let isCompacting: Bool
     let sessionId: UUID
 
+    /// One preference for every window, kept across relaunches, as the
+    /// Documents section keeps its own.
+    @AppStorage("contextDetailsExpanded") private var showsDetails = false
     @State private var showsMcpTools = false
     @State private var showsMemoryFiles = false
     /// Set by Refresh until a breakdown with a newer `measuredAt` arrives.
@@ -35,6 +39,15 @@ struct SidebarContextBreakdown: View {
                     .foregroundColor(Color(nsColor: .tertiaryLabelColor))
             }
             bar
+            disclosure("Details", count: nil, isOpen: $showsDetails) {
+                details
+            }
+            buttons
+        }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(breakdown.rows, id: \.self) { row in
                     rowView(row)
@@ -54,7 +67,6 @@ struct SidebarContextBreakdown: View {
                     }
                 }
             }
-            buttons
         }
     }
 
@@ -95,7 +107,7 @@ struct SidebarContextBreakdown: View {
     }
 
     private func disclosure<Content: View>(
-        _ title: String, count: Int, isOpen: Binding<Bool>, @ViewBuilder content: () -> Content
+        _ title: String, count: Int?, isOpen: Binding<Bool>, @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
@@ -107,9 +119,11 @@ struct SidebarContextBreakdown: View {
                         .frame(width: 10)
                     Text(title).font(.system(size: 11))
                     Spacer()
-                    Text("\(count)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                    if let count {
+                        Text("\(count)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                    }
                 }
                 .contentShape(Rectangle())
             }
