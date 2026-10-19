@@ -66,6 +66,7 @@ The mod (`Resources/sidebar-bridge-mod/hooks/register.ts`) turns Claude Code's n
 | `tool.check` with `ask`, still unanswered after 4 s | `Notification`, `permission_prompt` |
 | `session.measure`, plus a 3 s timer | the `statusline` payload, from `$.session.usage()` |
 | `gh pr view`, every 60 s and after a Bash call whose result reports a PR, push or branch change | the `statusline` payload's `pr` block |
+| `$.session.usage({ breakdown: 'full' })` at session start, after a compact and on Refresh; rebuilt after each turn | the `statusline` payload's `context_breakdown` |
 
 The mod hooks no `classic.*` event. On machines with managed settings, and for Team and Enterprise organizations, the built-in `cc-plugin-sec-default` plugin skips user-tier plugins on those events.
 
@@ -79,6 +80,12 @@ Some statusLine figures have no `$` call, so the mod keeps them in `$.state`:
 - **Duration** counts from this process's first `session.start` (and from `/clear`). `usage.startedAt` is a resumed session's *first* launch, so with `--continue` it reported days.
 - **Output tokens** sum `turn.complete`'s `usage.output_tokens` over every loop. **Cache tokens** are the last main-loop turn's, as the statusLine's `current_usage` was.
 - **Lines added and removed** count the `+` and `-` lines of each Edit, Write, MultiEdit and NotebookEdit result's `structuredPatch`. The optional `gitDiff` field would say the same, but the engine leaves it out of most results.
+
+### Context breakdown, Refresh and Compact
+
+The Context card shows the `/context` breakdown: one row per category, and the MCP tools and memory files behind two of them. A full count sends about one token-count API request per tool and memory file, so the mod runs one only at session start, after a compact, and when the person presses **Refresh**. Between those the fixed rows (tools, skills, memory, system prompt) hold. After each turn the mod rebuilds Messages from the main context's input tokens (`usage.context.tokens`) minus those fixed rows, which costs no request.
+
+The app cannot call into a session, so the buttons go through a file. Refresh and **Compact session** write `{"action": "refresh" | "compact"}` to `mod-request.json` in the session's status directory (`CLAUDE_TERMINAL_STATUS_DIR`). The mod polls it once a second and empties it when it takes the request (`$.fs` has no delete). Compact runs `$.session.compact()` and sends `compacting: true`, then `false`, so the sidebar can disable the buttons while it runs.
 
 No native source gives Claude Code's own session name (`/rename`) or the permission mode, so the sidebar shows neither. The window title still comes from the app and from your own renames. The pull request comes from `gh` instead: the mod runs `gh pr view` in the session's directory. When `gh` is missing, signed out or offline, the mod sends nothing and the card keeps the last PR it showed. TaskCompleted has no native event either: a task's status still updates through the `TaskUpdate` tool input that `PreToolUse` carries.
 

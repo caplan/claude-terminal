@@ -35,7 +35,7 @@ struct ContentView: View {
         // seeing the bytes.
         config.environmentVariables["CLAUDE_CODE_EAGER_FLUSH"] = "1"
         let userPluginDirs = AppDelegate.shared?.userShellEnvironment?["CLAUDE_CODE_PLUGIN_DIRS"]
-        for (key, value) in ClaudeCodeIntegration.sessionEnvironment(existingPluginDirs: userPluginDirs) {
+        for (key, value) in ClaudeCodeIntegration.sessionEnvironment(existingPluginDirs: userPluginDirs, sessionId: sessionId) {
             config.environmentVariables[key] = value
         }
         if let userEnv = AppDelegate.shared?.userShellEnvironment {

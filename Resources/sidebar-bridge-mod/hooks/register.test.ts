@@ -13,13 +13,48 @@ const run = (r: Gh) => ({
 
 // Stands for the claude-terminal-hook binary: records what the mod sends.
 // `gh` answers as `gh pr view` would; by default the branch has no PR.
+// What `$.session.usage({ breakdown: 'full' })` answers, as the engine's
+// /context counts it: the same rows a live session returned.
+const FULL_BREAKDOWN = {
+  categories: [
+    { name: 'System prompt', tokens: 2000, color: 'promptBorder', isDeferred: false, kind: 'used' },
+    { name: 'System tools', tokens: 6000, color: 'inactive', isDeferred: false, kind: 'used' },
+    { name: 'MCP tools', tokens: 46000, color: 'cyan', isDeferred: false, kind: 'used' },
+    { name: 'Messages', tokens: 0, color: 'purple', isDeferred: false, kind: 'used' },
+    { name: 'Compact buffer', tokens: 3000, color: 'inactive', isDeferred: false, kind: 'buffer' },
+    { name: 'Free space', tokens: 143000, color: 'promptBorder', isDeferred: false, kind: 'free' },
+  ],
+  totalTokens: 54000, maxTokens: 200000, rawMaxTokens: 200000, autocompactSource: 'model', percentage: 27,
+  gridRows: [], model: 'claude-opus-5-5',
+  memoryFiles: [{ path: '/work/CLAUDE.md', type: 'Project', tokens: 900 }, { path: '/u/.claude/CLAUDE.md', type: 'User', tokens: 1500 }],
+  mcpTools: [{ name: 'search', serverName: 'glean', tokens: 300, isLoaded: true }, { name: 'query', serverName: 'datadog', tokens: 2200, isLoaded: true }],
+  agents: [], isAutoCompactEnabled: true, apiUsage: null,
+}
+
+type Options = {
+  gh?: Gh
+  usageStartedAt?: number
+  /** The main context's input tokens, `usage.context.tokens`. */
+  contextTokens?: number
+  /** What the app wrote to mod-request.json, or undefined for no file. */
+  request?: { text: string }
+}
+
 function helper(
   on: On,
   gh: Gh = { exitCode: 1, stderr: 'no pull requests found for branch "main"' },
   usageStartedAt = 0,
+  options: Omit<Options, 'gh' | 'usageStartedAt'> = {},
 ): Sent[] {
   const sent: Sent[] = []
-  mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER })
+  mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER, CLAUDE_TERMINAL_STATUS_DIR: '/status' })
+  const request = options.request
+  on('fs.exists', ($, e) => ({ value: e.path === '/status/mod-request.json' && request !== undefined }))
+  on('fs.read', () => ({ value: request?.text ?? '' }))
+  on('fs.write', ($, e) => {
+    if (request && e.path === '/status/mod-request.json') request.text = e.text
+    return { value: undefined }
+  })
   on('process.run', ($, e) => {
     if (e.argv[0] === 'gh') return run(gh)
     if (e.argv[0] === HELPER) {
@@ -30,10 +65,15 @@ function helper(
   on('session.id', () => ({ value: 'cc-session' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.usage', () => ({
+  on('session.usage', ($, e) => ({
     value: {
       startedAt: usageStartedAt,
-      context: { tokens: 1000, window: 200000, percent: 1 },
+      context: {
+        tokens: options.contextTokens ?? 1000,
+        window: 200000,
+        percent: 1,
+        ...(e?.breakdown ? { breakdown: FULL_BREAKDOWN } : {}),
+      },
       rateLimits: [],
       cost: { usd: 0.25 },
     },
@@ -257,4 +297,82 @@ test('lines added and removed sum over Edit and Write patches', async ($, on) =>
   await $.tool.call({ tool: 'Write', tool_use_id: 'w1', file_path: '/b.swift', content: 'x' })
   await measure($)
   expect(lastLine(sent)?.cost).toMatchObject({ total_lines_added: 5, total_lines_removed: 1 })
+})
+
+type SentBreakdown = {
+  window_tokens: number
+  used_tokens: number
+  rows: { name: string; tokens: number; kind: string }[]
+  mcp_tools: { name: string; tokens: number }[]
+  memory_files: { path: string; tokens: number }[]
+}
+
+const breakdowns = (sent: Sent[]) =>
+  sent
+    .filter(s => s.subcommand === 'statusline' && 'context_breakdown' in s.payload)
+    .map(s => s.payload.context_breakdown as SentBreakdown)
+
+const rowTokens = (b: SentBreakdown | undefined, name: string) => b?.rows.find(r => r.name === name)?.tokens
+
+test('a session start measures the breakdown and sends its rows, largest tools first', async ($, on) => {
+  const sent = helper(on, undefined, 0, { contextTokens: 54000 })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  const b = breakdowns(sent).at(-1)
+  expect(b?.rows.map(r => r.name)).toEqual([
+    'System prompt', 'System tools', 'MCP tools', 'Messages', 'Compact buffer', 'Free space',
+  ])
+  expect(rowTokens(b, 'Messages')).toEqual(0)
+  expect(rowTokens(b, 'Free space')).toEqual(200000 - 54000 - 3000)
+  expect(b?.mcp_tools.map(t => t.name)).toEqual(['query', 'search'])
+  expect(b?.memory_files.map(f => f.tokens)).toEqual([1500, 900])
+})
+
+test('after a turn, Messages is the input tokens minus the fixed rows', async ($, on) => {
+  const sent = helper(on, undefined, 0, { contextTokens: 54000 + 20000 })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 't' })
+  const b = breakdowns(sent).at(-1)
+  expect(rowTokens(b, 'Messages')).toEqual(20000)
+  expect(b?.used_tokens).toEqual(74000)
+})
+
+test('a refresh request measures again and empties the request file', async ($, on) => {
+  const request = { text: '' }
+  const sent = helper(on, undefined, 0, { request })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  const before = breakdowns(sent).length
+  request.text = '{"action":"refresh"}'
+  await clock.advance(1000)
+  expect(breakdowns(sent).length).toBeGreaterThan(before)
+  expect(request.text).toEqual('')
+})
+
+test('a compact request compacts once and reports it running, then done', async ($, on) => {
+  const request = { text: '' }
+  const sent = helper(on, undefined, 0, { request })
+  const clock = mock.clock(on)
+  let compacts = 0
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.compact', () => {
+    compacts++
+    return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }
+  })
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  request.text = '{"action":"compact"}'
+  await clock.advance(1000)
+  await clock.advance(1000)
+  expect(compacts).toEqual(1)
+  const flags = sent.filter(s => 'compacting' in s.payload).map(s => s.payload.compacting)
+  expect(flags).toEqual([true, false])
 })

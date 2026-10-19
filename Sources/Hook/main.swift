@@ -602,6 +602,15 @@ func runStatusLine() {
         state["contextUsage"] = usage
     }
 
+    // The /context breakdown and whether a sidebar-requested compact is
+    // running. The mod builds both; they are stored as sent.
+    if let breakdown = data["context_breakdown"] as? [String: Any] {
+        state["contextBreakdown"] = breakdown
+    }
+    if let compacting = data["compacting"] as? Bool {
+        state["isCompacting"] = compacting
+    }
+
     // Cost: Claude Code's statusline reports cumulative totals across the
     // entire CLI lifetime — /clear does NOT reset them. The SessionStart
     // hook flags `_pendingCostReset` when the user runs /clear; we honor

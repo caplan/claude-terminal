@@ -22,6 +22,38 @@ struct ContextUsage: Codable, Equatable {
     }
 }
 
+/// The /context breakdown the mod sends: one row per category, and the MCP
+/// tools and memory files behind two of them, largest first.
+struct ContextBreakdown: Codable, Equatable {
+    struct Row: Codable, Equatable, Hashable {
+        var name: String
+        var tokens: Int
+        /// `used`, `free`, `buffer` or `deferred`.
+        var kind: String
+    }
+    struct McpTool: Codable, Equatable, Hashable {
+        var name: String
+        var server: String
+        var tokens: Int
+    }
+    struct MemoryFile: Codable, Equatable, Hashable {
+        var path: String
+        var tokens: Int
+    }
+    var windowTokens: Int
+    var usedTokens: Int
+    /// When the last full count ran, in milliseconds since the epoch.
+    var measuredAt: Double
+    var rows: [Row]
+    var mcpTools: [McpTool]
+    var memoryFiles: [MemoryFile]
+
+    enum CodingKeys: String, CodingKey {
+        case windowTokens = "window_tokens", usedTokens = "used_tokens", measuredAt = "measured_at"
+        case rows, mcpTools = "mcp_tools", memoryFiles = "memory_files"
+    }
+}
+
 struct CostInfo: Codable, Equatable {
     var totalCostUsd: Double
     var totalDurationMs: Int
@@ -105,6 +137,8 @@ struct SessionState: Codable, Equatable {
     var needsInput: Bool?
     var permissionMode: String?
     var pullRequest: PullRequest?
+    var contextBreakdown: ContextBreakdown?
+    var isCompacting: Bool?
     var apiSendMs: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -112,7 +146,7 @@ struct SessionState: Codable, Equatable {
         case status, contextUsage, cost, claudeCodeSessionId
         case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput
-        case permissionMode, pullRequest
+        case permissionMode, pullRequest, contextBreakdown, isCompacting
         case apiSendMs = "_apiSendMs"
     }
 

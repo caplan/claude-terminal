@@ -712,6 +712,14 @@ struct SidebarView: View {
             Text(formatTokens(ctx.contextWindowSize) + " window")
                 .font(.system(size: 11))
                 .foregroundColor(Color(nsColor: .tertiaryLabelColor))
+            if let breakdown = state.contextBreakdown {
+                Divider().padding(.vertical, 2)
+                SidebarContextBreakdown(
+                    breakdown: breakdown,
+                    isCompacting: state.isCompacting ?? false,
+                    sessionId: monitor.sessionId
+                )
+            }
         }
     }
 

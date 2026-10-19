@@ -105,8 +105,23 @@ enum ClaudeCodeIntegration {
         AppBundlePaths.resources.appendingPathComponent("claude-terminal-hook").path
     }
 
+    /// The session's status directory, which the mod reads requests from.
+    static func statusDirectory(sessionId: UUID) -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-terminal/sessions/\(sessionId.uuidString)").path
+    }
+
+    /// Asks the session's mod to act: `refresh` measures the context breakdown
+    /// again, `compact` compacts the conversation. The mod polls for this file
+    /// once a second and empties it when it takes the request.
+    static func sendModRequest(_ action: String, sessionId: UUID) {
+        let path = statusDirectory(sessionId: sessionId) + "/mod-request.json"
+        let body = (try? JSONSerialization.data(withJSONObject: ["action": action])) ?? Data()
+        try? body.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
     /// Environment for each Claude Code session the app launches.
-    static func sessionEnvironment(existingPluginDirs: String?) -> [String: String] {
+    static func sessionEnvironment(existingPluginDirs: String?, sessionId: UUID) -> [String: String] {
         var dirs = [modDirectoryPath]
         if let existingPluginDirs, !existingPluginDirs.isEmpty {
             dirs.append(existingPluginDirs)
@@ -115,6 +130,7 @@ enum ClaudeCodeIntegration {
             "CLAUDE_CODE_PLUGIN_DIRS": dirs.joined(separator: ":"),
             "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
             "CLAUDE_TERMINAL_HOOK": helperBinaryPath,
+            "CLAUDE_TERMINAL_STATUS_DIR": statusDirectory(sessionId: sessionId),
         ]
     }
 }

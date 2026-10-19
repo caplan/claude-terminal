@@ -20,6 +20,26 @@ export type SidebarBridgeTotals = {
   linesRemoved: number
 }
 
+/** One row of the context breakdown, as /context lists it. */
+export type SidebarBridgeContextRow = {
+  name: string
+  tokens: number
+  kind: 'used' | 'free' | 'buffer' | 'deferred'
+}
+
+/**
+ * The last full /context breakdown: its fixed rows (everything but Messages,
+ * Free space and the buffer) and the main context's input tokens when it ran,
+ * so later turns can rebuild Messages from their own input tokens.
+ */
+export type SidebarBridgeBreakdown = {
+  rows: SidebarBridgeContextRow[]
+  windowTokens: number
+  mcpTools: { name: string; server: string; tokens: number }[]
+  memoryFiles: { path: string; tokens: number }[]
+  measuredAt: number
+} | null
+
 declare module 'claude-code' {
   interface PluginState {
     'sidebar-bridge': {
@@ -31,6 +51,8 @@ declare module 'claude-code' {
       startedAt: SidebarBridgeStartedAt
       /** Token and line figures from turn.complete and file edits. */
       totals: SidebarBridgeTotals
+      /** The last full breakdown; null until one has run. */
+      breakdown: SidebarBridgeBreakdown
     }
   }
 }

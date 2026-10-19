@@ -1,6 +1,13 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 import { atom, read, update } from 'claude-code'
-import type { SidebarBridgeApiMs, SidebarBridgeStarted, SidebarBridgeStartedAt, SidebarBridgeTotals } from '../types'
+import type {
+  SidebarBridgeApiMs,
+  SidebarBridgeBreakdown,
+  SidebarBridgeContextRow,
+  SidebarBridgeStarted,
+  SidebarBridgeStartedAt,
+  SidebarBridgeTotals,
+} from '../types'
 
 // Loaded in each session claude-terminal launches, via CLAUDE_CODE_PLUGIN_DIRS.
 // It is the app's whole Claude Code integration: nothing is written to
@@ -72,6 +79,89 @@ const ZERO_TOTALS: SidebarBridgeTotals = {
   linesRemoved: 0,
 }
 const totals = atom({ plugin: 'sidebar-bridge', key: 'totals' } as const, ZERO_TOTALS)
+
+// The /context breakdown. A full one asks the API to count each tool and
+// memory file, about one request per tool, so it runs at session start, after
+// a compact and when the person presses Refresh. Between those the fixed rows
+// hold, and each turn rebuilds Messages from the main context's input tokens.
+const breakdown = atom({ plugin: 'sidebar-bridge', key: 'breakdown' } as const, null as SidebarBridgeBreakdown)
+
+// Rows the context is made of besides the conversation: kept from the last full
+// breakdown. Messages, Free space and the compact buffer are worked out again.
+const MESSAGES = 'Messages'
+
+async function measureBreakdown($: EngineInterface) {
+  const usage = await $.session.usage({ breakdown: 'full' })
+  const b = usage.context.breakdown
+  if (!b) return
+  const now = await $.clock.now()
+  await update($, breakdown, () => ({
+    rows: b.categories
+      .filter(c => c.kind === 'used' && c.name !== MESSAGES)
+      .map(c => ({ name: c.name, tokens: c.tokens, kind: c.kind })),
+    windowTokens: b.rawMaxTokens,
+    mcpTools: b.mcpTools.map(t => ({ name: t.name, server: t.serverName, tokens: t.tokens })),
+    memoryFiles: b.memoryFiles.map(f => ({ path: f.path, tokens: f.tokens })),
+    measuredAt: now,
+  }))
+  await sendBreakdown($)
+}
+
+// Sends the breakdown with Messages, Free space and the buffer for now. The
+// main context's input tokens (usage.context.tokens) are the conversation plus
+// the fixed rows, so Messages is what is left of them; before the first
+// response it is the full breakdown's own figure, 0.
+async function sendBreakdown($: EngineInterface) {
+  const b = await read($, breakdown)
+  if (!b) return
+  const usage = await $.session.usage()
+  const fixed = b.rows.reduce((sum, r) => sum + r.tokens, 0)
+  const messages = Math.max(0, (usage.context.tokens ?? fixed) - fixed)
+  const buffer = Math.min(3000, b.windowTokens)
+  const used = fixed + messages
+  const rows: SidebarBridgeContextRow[] = [
+    ...b.rows,
+    { name: MESSAGES, tokens: messages, kind: 'used' },
+    { name: 'Compact buffer', tokens: buffer, kind: 'buffer' },
+    { name: 'Free space', tokens: Math.max(0, b.windowTokens - used - buffer), kind: 'free' },
+  ]
+  await send($, 'statusline', {
+    context_breakdown: {
+      window_tokens: b.windowTokens,
+      used_tokens: used,
+      measured_at: b.measuredAt,
+      rows,
+      mcp_tools: [...b.mcpTools].sort((x, y) => y.tokens - x.tokens),
+      memory_files: [...b.memoryFiles].sort((x, y) => y.tokens - x.tokens),
+    },
+  })
+}
+
+// The app writes `{ "action": "refresh" | "compact" }` to this file in the
+// session's status directory when the person presses a sidebar button. The mod
+// polls it, as the app has no way to call into the session.
+const REQUEST_POLL_MS = 1000
+
+async function requestPath($: EngineInterface): Promise<string | undefined> {
+  const dir = await $.env.get('CLAUDE_TERMINAL_STATUS_DIR')
+  return dir ? `${dir}/mod-request.json` : undefined
+}
+
+// Reads and consumes a pending request. The file is emptied, not removed:
+// $.fs has no delete. An empty or unreadable file is no request.
+async function takeRequest($: EngineInterface): Promise<string | undefined> {
+  const path = await requestPath($)
+  if (!path || !(await $.fs.exists(path))) return undefined
+  const text = await $.fs.read(path).catch(() => '')
+  if (!text.trim()) return undefined
+  await $.fs.write(path, '')
+  try {
+    const { action } = JSON.parse(text) as { action?: unknown }
+    return typeof action === 'string' ? action : undefined
+  } catch {
+    return undefined
+  }
+}
 
 // The file tools whose result carries a structuredPatch.
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -175,9 +265,46 @@ async function statusLine($: EngineInterface) {
   })
 }
 
+// This module load's timers. A reload starts a fresh module, and the engine
+// drops the old one's timers, so module scope holds them.
+const timers: { status?: Timer; pr?: Timer; request?: Timer } = {}
+let isCompacting = false
+
+// Runs the request the app wrote. Refresh measures the breakdown again;
+// Compact compacts the main conversation, then session.compact measures.
+async function serveRequest($: EngineInterface) {
+  const action = await takeRequest($)
+  if (action === 'refresh') {
+    await measureBreakdown($)
+  } else if (action === 'compact' && !isCompacting) {
+    isCompacting = true
+    await send($, 'statusline', { compacting: true })
+    try {
+      await $.session.compact()
+    } catch (err) {
+      $.ui.log(`sidebar-bridge: compact failed: ${String(err)}`)
+    } finally {
+      isCompacting = false
+      await send($, 'statusline', { compacting: false })
+    }
+  }
+}
+
+function startPolls($: EngineInterface) {
+  stopPolls()
+  timers.status = $.clock.every(STATUS_POLL_MS, () => void statusLine($))
+  timers.pr = $.clock.every(PR_POLL_MS, () => void sendPr($))
+  timers.request = $.clock.every(REQUEST_POLL_MS, () => void serveRequest($))
+}
+
+function stopPolls() {
+  timers.status?.cancel()
+  timers.pr?.cancel()
+  timers.request?.cancel()
+  timers.status = timers.pr = timers.request = undefined
+}
+
 export const register: Register = on => {
-  let poll: Timer | undefined
-  let prPoll: Timer | undefined
   // An "ask" verdict's wait, by tool_use_id, until the call is answered.
   const pendingAsks = new Map<string, Timer>()
 
@@ -191,20 +318,17 @@ export const register: Register = on => {
       await update($, startedAt, () => now)
       await hook($, { hook_event_name: 'SessionStart', source: 'startup', model: await $.session.model() })
     }
-    poll?.cancel()
-    poll = $.clock.every(STATUS_POLL_MS, () => void statusLine($))
-    prPoll?.cancel()
-    prPoll = $.clock.every(PR_POLL_MS, () => void sendPr($))
+    startPolls($)
     await statusLine($)
     void sendPr($)
+    // A reload keeps the last breakdown in $.state; a fresh session measures.
+    if (await read($, breakdown)) void sendBreakdown($)
+    else void measureBreakdown($)
     return result
   })
 
   on('session.end', async ($, e, next) => {
-    poll?.cancel()
-    poll = undefined
-    prPoll?.cancel()
-    prPoll = undefined
+    stopPolls()
     const result = await next(e)
     // /clear ends the session with no session.start after it. The binary's
     // SessionStart with source "clear" resets the sidebar and sets the cost
@@ -218,8 +342,18 @@ export const register: Register = on => {
       await update($, startedAt, () => now)
       await update($, totals, () => ZERO_TOTALS)
       await hook($, { hook_event_name: 'SessionStart', source: 'clear', model: await $.session.model() })
-      poll = $.clock.every(STATUS_POLL_MS, () => void statusLine($))
-      prPoll = $.clock.every(PR_POLL_MS, () => void sendPr($))
+      startPolls($)
+      void measureBreakdown($)
+    }
+    return result
+  })
+
+  // A compact rewrites the conversation: measure the context it left. Only the
+  // main conversation's, and not a precompute that may never be applied.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    if (!e.agentId && e.trigger !== 'precompute' && !('skip' in result && result.skip)) {
+      void measureBreakdown($)
     }
     return result
   })
@@ -317,6 +451,8 @@ export const register: Register = on => {
       }))
     }
     await hook($, e.agentId ? { hook_event_name: 'SubagentStop', agent_id: e.agentId } : { hook_event_name: 'Stop' })
+    // The main context grew by this turn: Messages follows its input tokens.
+    if (!e.agentId) await sendBreakdown($)
     return result
   })
 
