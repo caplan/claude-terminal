@@ -67,14 +67,9 @@ const apiMs = atom({ plugin: 'sidebar-bridge', key: 'apiMs' } as const, 0 as Sid
 // statusLine's total_duration_ms counted from this process's start.
 const startedAt = atom({ plugin: 'sidebar-bridge', key: 'startedAt' } as const, 0 as SidebarBridgeStartedAt)
 
-// Figures the statusLine reported and $.session.usage() does not: output
-// tokens summed from turn.complete's usage; the last main-loop response's cache
-// tokens, as current_usage held them; and lines added and removed summed from
-// each Edit and Write call's structuredPatch.
+// Lines added and removed, summed from each Edit and Write call's
+// structuredPatch: the statusLine reported them and $.session.usage() does not.
 const ZERO_TOTALS: SidebarBridgeTotals = {
-  outputTokens: 0,
-  cacheReadTokens: 0,
-  cacheCreationTokens: 0,
   linesAdded: 0,
   linesRemoved: 0,
 }
@@ -232,29 +227,16 @@ async function sendPr($: EngineInterface) {
 
 // The statusLine payload, built from $.session.usage(). Cost is the session's
 // cumulative total, as total_cost_usd was, so the binary's /clear baseline still
-// subtracts; the two durations are cumulative the same way. The token and line
-// totals come from `totals`, the pull request from sendPr. No native source
-// gives Claude Code's own session name.
+// subtracts; the two durations are cumulative the same way. The line totals
+// come from `totals`, the pull request from sendPr, the context breakdown from
+// sendBreakdown. No native source gives Claude Code's own session name.
 async function statusLine($: EngineInterface) {
   const usage = await $.session.usage()
-  const { context } = usage
   const begun = await read($, startedAt)
   const durationMs = begun > 0 ? Math.max(0, (await $.clock.now()) - begun) : 0
   const t = await read($, totals)
   await send($, 'statusline', {
     model: { id: await $.session.model() },
-    context_window: {
-      context_window_size: context.window,
-      ...(context.percent !== undefined
-        ? { used_percentage: context.percent, remaining_percentage: 100 - context.percent }
-        : {}),
-      ...(context.tokens !== undefined ? { total_input_tokens: context.tokens } : {}),
-      total_output_tokens: t.outputTokens,
-      current_usage: {
-        cache_read_input_tokens: t.cacheReadTokens,
-        cache_creation_input_tokens: t.cacheCreationTokens,
-      },
-    },
     cost: {
       total_cost_usd: usage.cost?.usd ?? 0,
       total_duration_ms: durationMs,
@@ -438,18 +420,6 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (!e.agentId) await update($, apiMs, ms => ms + e.durationMs)
-    // Output tokens count from every loop, a subagent's too. The cache figures
-    // describe the main context, so only the main loop's replace them.
-    const u = e.usage
-    if (u) {
-      await update($, totals, t => ({
-        ...t,
-        outputTokens: t.outputTokens + u.output_tokens,
-        ...(e.agentId
-          ? {}
-          : { cacheReadTokens: u.cache_read_input_tokens, cacheCreationTokens: u.cache_creation_input_tokens }),
-      }))
-    }
     await hook($, e.agentId ? { hook_event_name: 'SubagentStop', agent_id: e.agentId } : { hook_event_name: 'Stop' })
     // The main context grew by this turn: Messages follows its input tokens.
     if (!e.agentId) await sendBreakdown($)

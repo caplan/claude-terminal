@@ -26,8 +26,9 @@ struct SidebarContextBreakdown: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Text("\(percent(breakdown.usedTokens))% used")
+                Text("\(breakdown.percentUsed)% used")
                     .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(sidebarContextBarColor(breakdown.fractionUsed))
                 Spacer()
                 Text("\(sidebarFormatTokens(breakdown.usedTokens)) / \(sidebarFormatTokens(breakdown.windowTokens))")
                     .font(.system(size: 11, design: .monospaced))
@@ -152,11 +153,6 @@ struct SidebarContextBreakdown: View {
         }
         .controlSize(.small)
         .padding(.top, 4)
-    }
-
-    private func percent(_ tokens: Int) -> Int {
-        guard breakdown.windowTokens > 0 else { return 0 }
-        return Int((Double(tokens) * 100 / Double(breakdown.windowTokens)).rounded())
     }
 
     private func share(_ tokens: Int) -> Double {

@@ -8,20 +8,6 @@ enum SessionStatus: String, Codable {
     case disconnected
 }
 
-struct ContextUsage: Codable, Equatable {
-    var usedPercentage: Int
-    var remainingPercentage: Int
-    var contextWindowSize: Int
-    var totalInputTokens: Int
-    var totalOutputTokens: Int
-    var cacheReadTokens: Int?
-    var cacheCreationTokens: Int?
-
-    var fractionUsed: Double {
-        Double(usedPercentage) / 100.0
-    }
-}
-
 /// The /context breakdown the mod sends: one row per category, and the MCP
 /// tools and memory files behind two of them, largest first.
 struct ContextBreakdown: Codable, Equatable {
@@ -47,6 +33,12 @@ struct ContextBreakdown: Codable, Equatable {
     var rows: [Row]
     var mcpTools: [McpTool]
     var memoryFiles: [MemoryFile]
+
+    var fractionUsed: Double {
+        windowTokens > 0 ? Double(usedTokens) / Double(windowTokens) : 0
+    }
+
+    var percentUsed: Int { Int((fractionUsed * 100).rounded()) }
 
     enum CodingKeys: String, CodingKey {
         case windowTokens = "window_tokens", usedTokens = "used_tokens", measuredAt = "measured_at"
@@ -123,7 +115,6 @@ struct SessionState: Codable, Equatable {
     var modelName: String?
     var workingDirectory: String?
     var status: SessionStatus
-    var contextUsage: ContextUsage?
     var cost: CostInfo?
     var claudeCodeSessionId: String?
     var currentToolName: String?
@@ -143,7 +134,7 @@ struct SessionState: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case sessionName, sessionNameOverride, modelName, workingDirectory
-        case status, contextUsage, cost, claudeCodeSessionId
+        case status, cost, claudeCodeSessionId
         case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput
         case permissionMode, pullRequest, contextBreakdown, isCompacting
@@ -155,7 +146,6 @@ struct SessionState: Codable, Equatable {
         modelName: nil,
         workingDirectory: nil,
         status: .disconnected,
-        contextUsage: nil,
         cost: nil,
         currentToolName: nil,
         toolDetail: nil,

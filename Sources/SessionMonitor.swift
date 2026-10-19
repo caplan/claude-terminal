@@ -66,15 +66,6 @@ final class SessionMonitor: ObservableObject {
             sessionName: "sidebar-feature",
             modelName: "Claude Opus 4.6",
             status: .thinking,
-            contextUsage: ContextUsage(
-                usedPercentage: 21,
-                remainingPercentage: 79,
-                contextWindowSize: 200_000,
-                totalInputTokens: 42_000,
-                totalOutputTokens: 8_500,
-                cacheReadTokens: 12_000,
-                cacheCreationTokens: 5_000
-            ),
             cost: CostInfo(
                 totalCostUsd: 0.0847,
                 totalDurationMs: 185_000,

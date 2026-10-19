@@ -19,24 +19,6 @@ struct TranscriptSnapshot: Equatable {
     var currentTurnErrorCount: Int
     /// When the current user prompt was submitted, for live elapsed display.
     var currentTurnStart: Date?
-    /// Prompt tokens (input + cache_read + cache_creation) for the most
-    /// recent assistant turn (deduped by `message.id`).
-    var lastTurnPromptTokens: Int?
-    /// Seconds between the prior assistant turn ending and the user prompt
-    /// that triggered this one. >300s correlates with cache-TTL rebuilds.
-    var lastTurnIdleSecsBefore: Int?
-    /// Percentage of token-weighted Read/Edit/Write artifacts loaded this
-    /// session that were never referenced by a later turn. nil while the
-    /// sample is too small to be meaningful.
-    var contextUnusedPct: Int?
-    /// Token budget the percentage was computed against (denominator).
-    var contextTrackedTokens: Int?
-    /// Tokens summed directly from artifacts that aged past the lag window
-    /// without being referenced — accurate, not derived from the rounded %.
-    var contextUnusedTokens: Int?
-    /// Top dead artifacts by est_tokens, for the "what's wasting your
-    /// context" disclosure. Capped at 5 entries, sorted descending.
-    var contextDeadArtifacts: [DeadArtifactEntry]
     /// True once we've seen at least one host (non-sidechain) assistant
     /// message in this transcript. Gates the "Done" label so a freshly
     /// opened session doesn't flash it before any work has happened.
@@ -49,12 +31,6 @@ struct TranscriptSnapshot: Equatable {
     /// truly silent end_turn (text-less, tool-less) from a tool-only turn.
     var lastAssistantHadToolUse: Bool
 
-    struct DeadArtifactEntry: Equatable {
-        let key: String
-        let tool: String
-        let estTokens: Int
-    }
-
     static let empty = TranscriptSnapshot(
         latestText: nil,
         recentTexts: [],
@@ -63,12 +39,6 @@ struct TranscriptSnapshot: Equatable {
         lastTurnErrorCount: nil,
         currentTurnErrorCount: 0,
         currentTurnStart: nil,
-        lastTurnPromptTokens: nil,
-        lastTurnIdleSecsBefore: nil,
-        contextUnusedPct: nil,
-        contextTrackedTokens: nil,
-        contextUnusedTokens: nil,
-        contextDeadArtifacts: [],
         hasSeenAssistant: false,
         lastAssistantHadText: true,
         lastAssistantHadToolUse: false
@@ -89,27 +59,7 @@ final class TranscriptTailer {
 
     private var snapshot = TranscriptSnapshot.empty
     private var currentTurnTools = 0
-    /// Claude Code splits one assistant response across multiple JSONL records
-    /// that share the same `message.id` and `usage` field. Without this set
-    /// every cost metric doubles.
-    private var seenMessageIds = Set<String>()
-    /// Timestamp of the most recent assistant record, used to compute the
-    /// idle gap before the next user prompt.
-    private var lastAssistantDate: Date?
-    /// Set when a user-prompt line is seen; consumed by the next assistant
-    /// turn to record `lastTurnIdleSecsBefore`.
-    private var pendingIdleSecs: Int?
-    private let waste = ContextWasteTracker()
-    /// Monotonic counter of unique assistant LLM requests; provides a turn
-    /// index to ContextWasteTracker so artifacts loaded "this turn" can't
-    /// match themselves.
-    private var assistantTurnCounter: Int = 0
     private static let recentTextLimit = 3
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
 
     init(onSnapshot: @escaping (TranscriptSnapshot) -> Void) {
         self.onSnapshot = onSnapshot
@@ -127,15 +77,10 @@ final class TranscriptTailer {
             self.currentPath = path
             self.snapshot = .empty
             self.currentTurnTools = 0
-            self.seenMessageIds.removeAll(keepingCapacity: false)
-            self.lastAssistantDate = nil
-            self.pendingIdleSecs = nil
-            self.waste.reset()
-            self.assistantTurnCounter = 0
             // Publish the blank snapshot immediately — /clear swaps to a
             // new JSONL, but the file starts empty so no processLine call
             // will fire until the user types. Without this, SwiftUI keeps
-            // rendering the pre-clear context bar.
+            // rendering the pre-clear turn state.
             let snap = self.snapshot
             DispatchQueue.main.async { [onSnapshot = self.onSnapshot] in onSnapshot(snap) }
             self.open(path: path, seekToEnd: false)
@@ -264,21 +209,8 @@ final class TranscriptTailer {
 
         if type == "user" {
             // /compact writes a synthetic user record with isCompactSummary=true.
-            // From this point the model's next prompt drops the pre-compact
-            // history, so every pre-existing artifact is no longer in the
-            // prompt and shouldn't count toward "context waste". Reset the
-            // tracker (but keep session cost — that's cumulative and still
-            // accurate). Publish immediately so the context bar snaps back
-            // to neutral without waiting for the next assistant turn.
+            // The pre-compact turn is over: start the next one fresh.
             if (obj["isCompactSummary"] as? Bool) == true {
-                waste.reset()
-                seenMessageIds.removeAll(keepingCapacity: false)
-                assistantTurnCounter = 0
-                snapshot.contextUnusedPct = nil
-                snapshot.contextTrackedTokens = nil
-                snapshot.contextUnusedTokens = nil
-                snapshot.contextDeadArtifacts = []
-                snapshot.lastTurnPromptTokens = nil
                 resetTurn()
                 return true
             }
@@ -296,16 +228,11 @@ final class TranscriptTailer {
             // tool_result blocks) from a tool_result entry. tool_results
             // happen mid-turn and shouldn't reset the assistant trace.
             if Self.isUserPrompt(obj) {
-                if let last = lastAssistantDate,
-                   let promptDate = Self.parseTimestamp(obj["timestamp"]) {
-                    pendingIdleSecs = max(0, Int(promptDate.timeIntervalSince(last)))
-                }
                 resetTurn()
                 return true
             }
             // Tool result: count errors toward the live turn so the chip
-            // ribbon can show them, and feed sizes into the waste tracker
-            // so we can token-weight the unused-context metric.
+            // ribbon can show them.
             if let message = obj["message"] as? [String: Any],
                let content = message["content"] as? [[String: Any]] {
                 var changed = false
@@ -315,10 +242,6 @@ final class TranscriptTailer {
                 if errors > 0 {
                     snapshot.currentTurnErrorCount += errors
                     changed = true
-                }
-                for blk in content where (blk["type"] as? String) == "tool_result" {
-                    guard let id = blk["tool_use_id"] as? String else { continue }
-                    waste.recordToolResult(toolUseId: id, content: Self.toolResultText(blk["content"]))
                 }
                 return changed
             }
@@ -380,109 +303,7 @@ final class TranscriptTailer {
             }
         }
 
-        if let date = Self.parseTimestamp(obj["timestamp"]) {
-            lastAssistantDate = date
-        }
-
-        if let id = message["id"] as? String,
-           let promptTokens = Self.parsePromptTokens(message["usage"]),
-           !seenMessageIds.contains(id) {
-            seenMessageIds.insert(id)
-            snapshot.lastTurnPromptTokens = promptTokens
-            snapshot.lastTurnIdleSecsBefore = pendingIdleSecs
-            pendingIdleSecs = nil
-
-            assistantTurnCounter += 1
-            // Scan this request's text + tool_use args for references to
-            // *prior* artifacts before recording any new ones; the tracker's
-            // turnIdx filter prevents same-turn self-matches but ordering
-            // makes the intent obvious.
-            waste.scanReferences(turnIdx: assistantTurnCounter, haystack: Self.haystack(content))
-            for blk in content where (blk["type"] as? String) == "tool_use" {
-                let name = (blk["name"] as? String) ?? ""
-                guard let id = blk["id"] as? String,
-                      let input = blk["input"] as? [String: Any] else { continue }
-                waste.recordToolUse(turnIdx: assistantTurnCounter, toolUseId: id, name: name, input: input)
-            }
-            if let summary = waste.summary(currentTurnIdx: assistantTurnCounter) {
-                snapshot.contextUnusedPct = summary.unusedPct
-                snapshot.contextTrackedTokens = summary.totalTokens
-                snapshot.contextUnusedTokens = summary.unusedTokens
-                snapshot.contextDeadArtifacts = waste.topDeadArtifacts(
-                    currentTurnIdx: assistantTurnCounter
-                ).map {
-                    TranscriptSnapshot.DeadArtifactEntry(
-                        key: $0.key, tool: $0.tool, estTokens: $0.estTokens
-                    )
-                }
-            }
-            changed = true
-        }
-
         return changed
-    }
-
-    /// Concatenate text blocks and JSON-encoded tool_use input fields. This
-    /// is the haystack ContextWasteTracker scans against — anything the model
-    /// emits in this request that could "use" a previously-loaded artifact.
-    private static func haystack(_ content: [[String: Any]]) -> String {
-        var parts: [String] = []
-        for blk in content {
-            switch blk["type"] as? String {
-            case "text":
-                if let t = blk["text"] as? String { parts.append(t) }
-            case "thinking":
-                if let t = blk["thinking"] as? String { parts.append(t) }
-            case "tool_use":
-                if let input = blk["input"],
-                   let data = try? JSONSerialization.data(withJSONObject: input),
-                   let s = String(data: data, encoding: .utf8) {
-                    parts.append(s)
-                }
-            default:
-                break
-            }
-        }
-        return parts.joined(separator: "\n")
-    }
-
-    /// Best-effort text extraction for a tool_result `content` field,
-    /// which can be a plain string or an array of `{type:"text",
-    /// text:"..."}` blocks. Used for token estimation (chars/4) and
-    /// symbol extraction in `ContextWasteTracker.recordToolResult`.
-    private static func toolResultText(_ raw: Any?) -> String {
-        if let s = raw as? String { return s }
-        if let arr = raw as? [[String: Any]] {
-            var parts: [String] = []
-            for blk in arr where (blk["type"] as? String) == "text" {
-                if let t = blk["text"] as? String { parts.append(t) }
-            }
-            return parts.joined(separator: "\n")
-        }
-        return ""
-    }
-
-    private static func parseTimestamp(_ raw: Any?) -> Date? {
-        guard let s = raw as? String, !s.isEmpty else { return nil }
-        return isoFormatter.date(from: s)
-    }
-
-    /// Returns prompt tokens (input + cache_read + cache_creation) from a
-    /// `message.usage` dict. nil for synthetic rows where everything is zero.
-    private static func parsePromptTokens(_ raw: Any?) -> Int? {
-        guard let dict = raw as? [String: Any] else { return nil }
-        func intVal(_ key: String) -> Int {
-            if let i = dict[key] as? Int { return i }
-            if let d = dict[key] as? Double { return Int(d) }
-            return 0
-        }
-        let input = intVal("input_tokens")
-        let cacheRead = intVal("cache_read_input_tokens")
-        let cacheCreation = intVal("cache_creation_input_tokens")
-        let output = intVal("output_tokens")
-        let prompt = input + cacheRead + cacheCreation
-        if prompt == 0 && output == 0 { return nil }
-        return prompt
     }
 
     /// New user prompt: clear the assistant trace, start the live turn clock,

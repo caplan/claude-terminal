@@ -12,14 +12,13 @@ enum PrefOverrides {
         case stringEnum([String])
     }
 
-    /// Allowlist: the six preferences exposed in the Settings UI.
+    /// Allowlist: the five preferences exposed in the Settings UI.
     static let supported: [String: Spec] = [
         "appearanceMode":          .stringEnum(["System", "Light", "Dark"]),
         "sidebarDefaultVisible":   .bool,
         "notificationsEnabled":    .bool,
         "menuBarIconVisible":      .bool,
         "menuBarTrigger":          .stringEnum(["hover", "click"]),
-        "contextWasteWindowTurns": .int,
     ]
 
     /// Parse `["key=value", ...]` into a typed dictionary suitable for

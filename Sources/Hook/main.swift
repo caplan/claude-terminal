@@ -266,12 +266,12 @@ func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
     state["subagents"] = []
     state["tasks"] = []
     // Reset cumulative-per-session counters. cost, turn count, network
-    // totals, and context usage all belong to the prior session and must
-    // not bleed into the cleared one. Resume hydrates cost again from
-    // the persist map below; context is re-reported by the next poll.
+    // totals, and the context breakdown all belong to the prior session and
+    // must not bleed into the cleared one. Resume hydrates cost again from
+    // the persist map below; the mod measures the breakdown again.
     state.removeValue(forKey: "cost")
     state.removeValue(forKey: "network")
-    state.removeValue(forKey: "contextUsage")
+    state.removeValue(forKey: "contextBreakdown")
     state["conversationTurns"] = 0
     // /clear in Claude Code does NOT reset `cost.total_cost_usd` in the
     // statusline payload — that field is cumulative for the whole CLI
@@ -585,21 +585,6 @@ func runStatusLine() {
     // including permission_mode here, this one line will pick it up.
     if let mode = data["permission_mode"] as? String, !mode.isEmpty {
         state["permissionMode"] = mode
-    }
-
-    // Context window
-    if let cw = data["context_window"] as? [String: Any] {
-        let cu = (cw["current_usage"] as? [String: Any]) ?? [:]
-        var usage: [String: Any] = [
-            "usedPercentage": cw["used_percentage"] ?? 0,
-            "remainingPercentage": cw["remaining_percentage"] ?? 100,
-            "contextWindowSize": cw["context_window_size"] ?? 200000,
-            "totalInputTokens": cw["total_input_tokens"] ?? 0,
-            "totalOutputTokens": cw["total_output_tokens"] ?? 0,
-        ]
-        usage["cacheReadTokens"] = cu["cache_read_input_tokens"] ?? NSNull()
-        usage["cacheCreationTokens"] = cu["cache_creation_input_tokens"] ?? NSNull()
-        state["contextUsage"] = usage
     }
 
     // The /context breakdown and whether a sidebar-requested compact is

@@ -156,21 +156,15 @@ test('an ask the mode settles in time sends no Notification', async ($, on) => {
   expect(events(sent)).toEqual(['PreToolUse', 'PostToolUse'])
 })
 
-test('the status line carries model, context and cumulative cost', async ($, on) => {
+test('the status line carries model and cumulative cost, and no context window', async ($, on) => {
   const sent = helper(on)
   mock.clock(on, { now: 5000 })
   on('session.measure', ($, e) => ({ changed: e.changed }))
   await $.session.measure({ context: { tokens: 1000, window: 200000, percent: 1 }, rateLimits: [], changed: ['cost'] })
   const line = sent.find(s => s.subcommand === 'statusline')?.payload
   expect(line?.model).toEqual({ id: 'claude-opus-5-5' })
-  expect(line?.context_window).toEqual({
-    context_window_size: 200000,
-    used_percentage: 1,
-    remaining_percentage: 99,
-    total_input_tokens: 1000,
-    total_output_tokens: 0,
-    current_usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-  })
+  // The context card reads the breakdown alone; the old summary is gone.
+  expect(line && 'context_window' in line).toEqual(false)
   // No session.start ran here, so no start time is known yet: duration is 0.
   expect(line?.cost).toEqual({
     total_cost_usd: 0.25,
@@ -241,7 +235,7 @@ test('a Bash call with no git operation does not ask gh', async ($, on) => {
 
 const lastLine = (sent: Sent[]) =>
   sent.filter(s => s.subcommand === 'statusline' && 'cost' in s.payload).at(-1)?.payload as
-    | { context_window: Record<string, unknown>; cost: Record<string, unknown> }
+    | { cost: Record<string, unknown> }
     | undefined
 
 // session.measure answered beneath the plugins; register it before the test
@@ -262,25 +256,6 @@ test("duration counts from this process's start, not a resumed session's first l
   await clock.advance(90_000)
   await measure($)
   expect(lastLine(sent)?.cost.total_duration_ms).toEqual(90_000)
-})
-
-test('output tokens sum over turns; cache tokens are the last main turn', async ($, on) => {
-  const sent = helper(on)
-  mock.clock(on)
-  const measure = measured(on)
-  on('turn.complete', () => ({ text: '' }))
-  const base = { answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer' as const }
-  const usage = (out: number, read: number, made: number) => ({
-    input_tokens: 5, output_tokens: out, cache_read_input_tokens: read, cache_creation_input_tokens: made, model: 'm',
-  })
-  await $.turn.complete({ ...base, turnId: 'a', usage: usage(100, 4000, 50) })
-  await $.turn.complete({ ...base, turnId: 'b', agentId: 'sub', usage: usage(30, 9999, 9999) })
-  await $.turn.complete({ ...base, turnId: 'c', usage: usage(20, 5000, 10) })
-  await measure($)
-  expect(lastLine(sent)?.context_window).toMatchObject({
-    total_output_tokens: 150,
-    current_usage: { cache_read_input_tokens: 5000, cache_creation_input_tokens: 10 },
-  })
 })
 
 test('lines added and removed sum over Edit and Write patches', async ($, on) => {

@@ -7,15 +7,8 @@ export type SidebarBridgeApiMs = number
 /** When this process's session began, in $.clock.now() milliseconds. */
 export type SidebarBridgeStartedAt = number
 
-/**
- * Figures the status line used to carry and no $ call reports. Output tokens
- * and line counts are running totals; the cache figures are the last main-loop
- * response's, as the status line's current_usage was.
- */
+/** Lines added and removed this session, which no $ call reports. */
 export type SidebarBridgeTotals = {
-  outputTokens: number
-  cacheReadTokens: number
-  cacheCreationTokens: number
   linesAdded: number
   linesRemoved: number
 }
@@ -49,7 +42,7 @@ declare module 'claude-code' {
       apiMs: SidebarBridgeApiMs
       /** Set at the first session.start and at /clear. */
       startedAt: SidebarBridgeStartedAt
-      /** Token and line figures from turn.complete and file edits. */
+      /** Line counts from file edits. */
       totals: SidebarBridgeTotals
       /** The last full breakdown; null until one has run. */
       breakdown: SidebarBridgeBreakdown

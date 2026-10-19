@@ -82,7 +82,6 @@ func parseCLIArguments() -> CLIArguments? {
                                         notificationsEnabled    true | false
                                         menuBarIconVisible      true | false
                                         menuBarTrigger          hover | click
-                                        contextWasteWindowTurns <integer>
               -h, --help              Show this help
 
             Arguments after -- are passed directly to the Claude CLI.

@@ -37,7 +37,7 @@ The sidebar is a set of cards. They appear and collapse as they become relevant,
 
 **Activity chart.** A CPU-style bidirectional bar graph of the last 3 minutes. Claude bars grow up from the centerline, tool bars grow down. Colour ramps light-blue → yellow → orange → red as a single operation stays busy, peaking at red after 30 minutes — useful for spotting a stuck tool call. Hover a tool bar to see which tools ran in that slice.
 
-**Context & cost.** Context-window usage (percent, tokens, cache read/write), cumulative cost, API latency breakdown, and running token counts. Cost and context always stay visible — even when the window is short and other cards collapse to single-line summaries.
+**Context & cost.** Cumulative cost, and session and API time. The Context card is described below. Cost and context always stay visible — even when the window is short and other cards collapse to single-line summaries.
 
 **Subagents.** When Claude spawns a subagent (Explore, Plan, etc.), it appears as a row with a coloured status dot, the agent name, the tool it's running, and the argument detail. Right-click a row for **Force Quit**.
 

@@ -13,10 +13,6 @@ struct SidebarView: View {
     /// down, so the user can glance up from the terminal and still see what
     /// Claude last said.
     @State private var idleAt: Date?
-    /// Drives the instant tooltip on the context bar. .help() uses the
-    /// system tooltip, which has a ~1s delay; .onHover into a SwiftUI
-    /// overlay shows immediately.
-    @State private var contextBarHovering = false
     /// User toggle for the Documents section. Defaults to expanded; persisted
     /// in UserDefaults so it survives relaunches and is shared across windows
     /// (one global preference, not per-session — matches sidebar visibility).
@@ -74,12 +70,12 @@ struct SidebarView: View {
                 }
 
                 sectionCard { ActivityChartView(state: state, apiWaitSeconds: apiWaitSeconds) }
-                if let context = state.contextUsage {
+                if let breakdown = state.contextBreakdown {
                     sectionCard {
                         if collapse >= 3 {
-                            collapsedContextSection(context)
+                            collapsedContextSection(breakdown)
                         } else {
-                            contextSection(context)
+                            contextSection(breakdown)
                         }
                     }
                 }
@@ -165,7 +161,7 @@ struct SidebarView: View {
 
         // Fixed height below the docs area at the current collapse level.
         let netH: CGFloat = 12 + 80
-        let ctxH: CGFloat = state.contextUsage != nil ? 12 + (collapse >= 3 ? 44 : 144) : 0
+        let ctxH: CGFloat = state.contextBreakdown != nil ? 12 + (collapse >= 3 ? 44 : 144) : 0
         let costH: CGFloat = state.cost != nil ? 12 + (collapse >= 2 ? 44 : 124) : 0
         let belowDocs = netH + ctxH + costH
 
@@ -205,8 +201,8 @@ struct SidebarView: View {
         let netSmall: CGFloat = 12 + 80
         let costFull: CGFloat = state.cost != nil ? 12 + 124 : 0
         let costSmall: CGFloat = state.cost != nil ? 12 + 44 : 0
-        let ctxFull: CGFloat = state.contextUsage != nil ? 12 + 144 : 0
-        let ctxSmall: CGFloat = state.contextUsage != nil ? 12 + 44 : 0
+        let ctxFull: CGFloat = state.contextBreakdown != nil ? 12 + 144 : 0
+        let ctxSmall: CGFloat = state.contextBreakdown != nil ? 12 + 44 : 0
 
         if fixed + netFull + ctxFull + costFull <= availableHeight { return 0 }
         if fixed + netSmall + ctxFull + costFull <= availableHeight { return 1 }
@@ -615,111 +611,14 @@ struct SidebarView: View {
         return Text(stripped)
     }
 
-    private func contextSection(_ ctx: ContextUsage) -> some View {
-        let snap = monitor.transcript
-        let unusedPct = snap.contextUnusedPct ?? 0
-        let usedFrac = min(ctx.fractionUsed, 1.0)
-        let wastedFrac = usedFrac * Double(unusedPct) / 100.0
-        let inCtxTokens = snap.lastTurnPromptTokens
-            ?? Int(Double(ctx.contextWindowSize) * usedFrac)
-        let deadTokens = snap.contextUnusedTokens ?? 0
-        let trackedTokens = snap.contextTrackedTokens ?? 0
-        let tooltip: String = {
-            let lead = "\(formatTokens(inCtxTokens)) tokens in context"
-            guard deadTokens > 0, trackedTokens > 0 else { return lead }
-            let windowKey = UserDefaults.standard.integer(forKey: "contextWasteWindowTurns")
-            let windowTurns = windowKey > 0 ? windowKey : ContextWasteTracker.defaultWindowTurns
-            var msg = "\(lead). In the last \(windowTurns) turns, of \(formatTokens(trackedTokens)) tracked tokens, \(formatTokens(deadTokens)) were never re-referenced."
-            let dead = snap.contextDeadArtifacts
-            if !dead.isEmpty {
-                msg += "\n\nTop dead artifacts:"
-                for d in dead {
-                    let label = d.tool.isEmpty ? d.key : "\(d.key)  (\(d.tool))"
-                    msg += "\n  \(formatTokens(d.estTokens).padding(toLength: 6, withPad: " ", startingAt: 0))  \(label)"
-                }
-            }
-            return msg
-        }()
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionHeader("Context")
-                Spacer()
-                Text("\(ctx.usedPercentage)%")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(contextBarColor(ctx.fractionUsed))
-            }
-            GeometryReader { geo in
-                let totalW = geo.size.width * usedFrac
-                // Floor orange at 3px when waste >0 so a 2% sliver isn't
-                // sub-pixel. Take it out of the blue half so the total bar
-                // still equals usedFrac * geo.width.
-                let rawOrange = geo.size.width * wastedFrac
-                let orangeW = (wastedFrac > 0) ? max(rawOrange, min(3, totalW)) : 0
-                let blueW = max(0, totalW - orangeW)
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color(nsColor: .separatorColor))
-                        .frame(height: 6)
-                    HStack(spacing: 0) {
-                        Rectangle()
-                            .fill(Color.blue)
-                            .frame(width: blueW, height: 6)
-                        Rectangle()
-                            .fill(Color.orange)
-                            .frame(width: orangeW, height: 6)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                }
-            }
-            .frame(height: 6)
-            .contentShape(Rectangle())
-            .onHover { isIn in
-                contextBarHovering = isIn
-                if isIn {
-                    TooltipWindow.shared.show(text: tooltip, anchor: NSEvent.mouseLocation)
-                } else {
-                    TooltipWindow.shared.hide()
-                }
-            }
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("In")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                    Text(formatTokens(ctx.totalInputTokens))
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Out")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                    Text(formatTokens(ctx.totalOutputTokens))
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                }
-                if let cache = ctx.cacheReadTokens, cache > 0 {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Cache")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-                        Text(formatTokens(cache))
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    }
-                }
-            }
-            Text(formatTokens(ctx.contextWindowSize) + " window")
-                .font(.system(size: 11))
-                .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-            if let breakdown = state.contextBreakdown {
-                Divider().padding(.vertical, 2)
-                SidebarContextBreakdown(
-                    breakdown: breakdown,
-                    isCompacting: state.isCompacting ?? false,
-                    sessionId: monitor.sessionId
-                )
-            }
+    private func contextSection(_ breakdown: ContextBreakdown) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Context")
+            SidebarContextBreakdown(
+                breakdown: breakdown,
+                isCompacting: state.isCompacting ?? false,
+                sessionId: monitor.sessionId
+            )
         }
     }
 
@@ -787,13 +686,13 @@ struct SidebarView: View {
         }
     }
 
-    private func collapsedContextSection(_ ctx: ContextUsage) -> some View {
+    private func collapsedContextSection(_ breakdown: ContextBreakdown) -> some View {
         HStack {
             sectionHeader("Context")
             Spacer()
-            Text("\(ctx.usedPercentage)%")
+            Text("\(breakdown.percentUsed)%")
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundColor(contextBarColor(ctx.fractionUsed))
+                .foregroundColor(contextBarColor(breakdown.fractionUsed))
         }
     }
 
