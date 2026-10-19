@@ -462,9 +462,12 @@ struct SidebarView: View {
             }
             if let model = state.modelName {
                 HStack(spacing: 6) {
-                    Text(model)
-                        .font(.system(size: 13))
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    SidebarModelMenu(
+                        modelId: model,
+                        effortLevel: state.effortLevel,
+                        defaultModel: state.defaultModel,
+                        sessionId: monitor.sessionId
+                    )
                     // PLAN/YOLO badge is currently disabled because Claude Code
                     // only surfaces permission_mode in hook event payloads (not
                     // on Shift+Tab while idle and not in the statusline JSON).

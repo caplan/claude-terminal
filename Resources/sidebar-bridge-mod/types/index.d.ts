@@ -7,6 +7,9 @@ export type SidebarBridgeApiMs = number
 /** When this process's session began, in $.clock.now() milliseconds. */
 export type SidebarBridgeStartedAt = number
 
+/** The main loop's effort level, as the last request or /effort set it; null until known. */
+export type SidebarBridgeEffort = string | null
+
 /** One row of the context breakdown, as /context lists it. */
 export type SidebarBridgeContextRow = {
   name: string
@@ -41,6 +44,8 @@ declare module 'claude-code' {
       startedAt: SidebarBridgeStartedAt
       /** The last full breakdown; null until one has run. */
       breakdown: SidebarBridgeBreakdown
+      /** Set by each main-loop turn.step and by an /effort this mod runs. */
+      effort: SidebarBridgeEffort
     }
   }
 }

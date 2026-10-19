@@ -596,6 +596,15 @@ func runStatusLine() {
         state["isCompacting"] = compacting
     }
 
+    // The main loop's effort level and the model saved in settings, for the
+    // sidebar's model menu. The mod sends them with the model.
+    if let effort = data["effort"] as? String, !effort.isEmpty {
+        state["effortLevel"] = effort
+    }
+    if let defaultModel = data["default_model"] as? String, !defaultModel.isEmpty {
+        state["defaultModel"] = defaultModel
+    }
+
     // Cost: Claude Code's statusline reports cumulative totals across the
     // entire CLI lifetime — /clear does NOT reset them. The SessionStart
     // hook flags `_pendingCostReset` when the user runs /clear; we honor

@@ -31,6 +31,9 @@ const FULL_BREAKDOWN = {
   agents: [], isAutoCompactEnabled: true, apiUsage: null,
 }
 
+// The slash commands the mod ran, as typed: `/model haiku`.
+let commands: string[] = []
+
 type Options = {
   gh?: Gh
   usageStartedAt?: number
@@ -49,6 +52,8 @@ function helper(
   options: Omit<Options, 'gh' | 'usageStartedAt'> = {},
 ): Sent[] {
   const sent: Sent[] = []
+  commands = []
+  const model = { id: 'claude-opus-5-5' }
   mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER, CLAUDE_TERMINAL_STATUS_DIR: '/status' })
   const request = options.request
   on('fs.exists', ($, e) => ({ value: e.path === '/status/mod-request.json' && request !== undefined }))
@@ -66,7 +71,13 @@ function helper(
   })
   on('session.id', () => ({ value: 'cc-session' }))
   on('session.cwd', () => ({ value: '/work' }))
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.model', () => ({ value: model.id }))
+  on('settings.read', () => ({ value: { model: 'opus', effortLevel: 'xhigh' } }))
+  on('command.run', ($, e) => {
+    commands.push(`/${e.command} ${e.args}`)
+    if (e.command === 'model') model.id = e.args
+    return { text: '' }
+  })
   on('session.usage', ($, e) => {
     const tokens = options.live ? options.live.contextTokens : options.contextTokens === undefined ? 1000 : options.contextTokens
     const messages = options.live?.messagesTokens ?? 0
@@ -401,4 +412,58 @@ test('helper runs go one at a time, so a slow one cannot push the next past its 
   await calls
   expect(most).toEqual(1)
   expect(order).toHaveLength(4)
+})
+
+const statusLines = (sent: Sent[]) => sent.filter(s => s.subcommand === 'statusline' && 'model' in s.payload).map(s => s.payload)
+
+test('the status line carries the saved effort and default model before any request', async ($, on) => {
+  const sent = helper(on)
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  const line = statusLines(sent).at(-1)
+  expect(line?.effort).toEqual('xhigh')
+  expect(line?.default_model).toEqual('opus')
+})
+
+test('a model request runs /model and sends the new model', async ($, on) => {
+  const request = { text: '' }
+  const sent = helper(on, undefined, 0, { request })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  request.text = '{"action":"model","value":"haiku"}'
+  await clock.advance(1000)
+  expect(commands).toEqual(['/model haiku'])
+  expect((statusLines(sent).at(-1)?.model as { id: string }).id).toEqual('haiku')
+  expect(request.text).toEqual('')
+})
+
+test('an effort request runs /effort and the status line shows it', async ($, on) => {
+  const request = { text: '' }
+  const sent = helper(on, undefined, 0, { request })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  request.text = '{"action":"effort","value":"low"}'
+  await clock.advance(1000)
+  expect(commands).toEqual(['/effort low'])
+  expect(statusLines(sent).at(-1)?.effort).toEqual('low')
+})
+
+test('a model or effort that is not a plain name runs nothing', async ($, on) => {
+  const request = { text: '' }
+  helper(on, undefined, 0, { request })
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  request.text = '{"action":"model","value":"haiku; /clear"}'
+  await clock.advance(1000)
+  request.text = '{"action":"effort","value":"huge"}'
+  await clock.advance(1000)
+  expect(commands).toEqual([])
 })

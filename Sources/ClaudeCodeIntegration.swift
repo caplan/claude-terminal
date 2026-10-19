@@ -112,11 +112,14 @@ enum ClaudeCodeIntegration {
     }
 
     /// Asks the session's mod to act: `refresh` measures the context breakdown
-    /// again, `compact` compacts the conversation. The mod polls for this file
-    /// once a second and empties it when it takes the request.
-    static func sendModRequest(_ action: String, sessionId: UUID) {
+    /// again, `compact` compacts the conversation, `model` and `effort` run
+    /// `/model <value>` and `/effort <value>`. The mod polls for this file once
+    /// a second and empties it when it takes the request.
+    static func sendModRequest(_ action: String, value: String? = nil, sessionId: UUID) {
         let path = statusDirectory(sessionId: sessionId) + "/mod-request.json"
-        let body = (try? JSONSerialization.data(withJSONObject: ["action": action])) ?? Data()
+        var request = ["action": action]
+        if let value { request["value"] = value }
+        let body = (try? JSONSerialization.data(withJSONObject: request)) ?? Data()
         try? body.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 

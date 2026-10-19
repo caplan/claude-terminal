@@ -4,6 +4,7 @@ import type {
   SidebarBridgeApiMs,
   SidebarBridgeBreakdown,
   SidebarBridgeContextRow,
+  SidebarBridgeEffort,
   SidebarBridgeStarted,
   SidebarBridgeStartedAt,
 } from '../types'
@@ -85,6 +86,12 @@ const startedAt = atom({ plugin: 'sidebar-bridge', key: 'startedAt' } as const, 
 // hold, and each turn rebuilds Messages from the main context's input tokens.
 const breakdown = atom({ plugin: 'sidebar-bridge', key: 'breakdown' } as const, null as SidebarBridgeBreakdown)
 
+// The main loop's effort level. No call reads it: each request's turn.step
+// carries it, and an /effort this mod runs sets it before the next request.
+const effort = atom({ plugin: 'sidebar-bridge', key: 'effort' } as const, null as SidebarBridgeEffort)
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
 // Rows the context is made of besides the conversation: kept from the last full
 // breakdown. Messages, Free space and the compact buffer are worked out again.
 const MESSAGES = 'Messages'
@@ -155,17 +162,19 @@ async function requestPath($: EngineInterface): Promise<string | undefined> {
   return dir ? `${dir}/mod-request.json` : undefined
 }
 
+type Request = { action?: unknown; value?: unknown }
+
 // Reads and consumes a pending request. The file is emptied, not removed:
 // $.fs has no delete. An empty or unreadable file is no request.
-async function takeRequest($: EngineInterface): Promise<string | undefined> {
+async function takeRequest($: EngineInterface): Promise<Request | undefined> {
   const path = await requestPath($)
   if (!path || !(await $.fs.exists(path))) return undefined
   const text = await $.fs.read(path).catch(() => '')
   if (!text.trim()) return undefined
   await $.fs.write(path, '')
   try {
-    const { action } = JSON.parse(text) as { action?: unknown }
-    return typeof action === 'string' ? action : undefined
+    const request = JSON.parse(text) as Request
+    return typeof request?.action === 'string' ? request : undefined
   } catch {
     return undefined
   }
@@ -217,6 +226,23 @@ async function sendPr($: EngineInterface) {
   if (pr !== undefined) await send($, 'statusline', { pr })
 }
 
+// A model or effort the person picked in the sidebar's model menu. Each runs
+// the slash command, as typing it would, for this session only. The value
+// comes from a file, so only a plain model name or a known level is passed on.
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._\-]*(\[[A-Za-z0-9]+\])?$/
+
+async function switchTo($: EngineInterface, action: 'model' | 'effort', value: unknown) {
+  if (typeof value !== 'string') return
+  if (action === 'model' ? !MODEL_NAME.test(value) : !EFFORTS.includes(value)) return
+  try {
+    await $.command.run({ command: action, args: value })
+    if (action === 'effort') await update($, effort, () => value)
+  } catch (err) {
+    $.ui.log(`sidebar-bridge: /${action} ${value} failed: ${String(err)}`)
+  }
+  await statusLine($)
+}
+
 // The statusLine payload, built from $.session.usage(). Cost is the session's
 // cumulative total, as total_cost_usd was, so the binary's /clear baseline still
 // subtracts; the two durations are cumulative the same way. The pull request
@@ -225,8 +251,13 @@ async function statusLine($: EngineInterface) {
   const usage = await $.session.usage()
   const begun = await read($, startedAt)
   const durationMs = begun > 0 ? Math.max(0, (await $.clock.now()) - begun) : 0
+  const settings = ((await $.settings.read().catch(() => ({}))) ?? {}) as { model?: unknown; effortLevel?: unknown }
+  // Before the first request, the saved effort is the one it will use.
+  const level = (await read($, effort)) ?? (typeof settings.effortLevel === 'string' ? settings.effortLevel : null)
   await send($, 'statusline', {
     model: { id: await $.session.model() },
+    ...(level ? { effort: level } : {}),
+    ...(typeof settings.model === 'string' ? { default_model: settings.model } : {}),
     cost: {
       total_cost_usd: usage.cost?.usd ?? 0,
       total_duration_ms: durationMs,
@@ -241,10 +272,14 @@ const timers: { status?: Timer; pr?: Timer; request?: Timer } = {}
 let isCompacting = false
 
 // Runs the request the app wrote. Refresh measures the breakdown again;
-// Compact compacts the main conversation, then session.compact measures.
+// Compact compacts the main conversation, then session.compact measures;
+// model and effort switch the session's.
 async function serveRequest($: EngineInterface) {
-  const action = await takeRequest($)
-  if (action === 'refresh') {
+  const request = await takeRequest($)
+  const action = request?.action
+  if (action === 'model' || action === 'effort') {
+    await switchTo($, action, request?.value)
+  } else if (action === 'refresh') {
     await measureBreakdown($)
   } else if (action === 'compact' && !isCompacting) {
     isCompacting = true
@@ -416,6 +451,21 @@ export const register: Register = on => {
     if (!e.agentId) await sendBreakdown($)
     return result
   })
+
+  // The level each main-loop request goes out with: an /effort the person
+  // typed, or the model's own default after a /model, shows from here.
+  on('turn.step', async function* ($, e, next) {
+    if (!e.agentId && typeof e.effort === 'string' && e.effort !== (await read($, effort))) {
+      const level = e.effort
+      await update($, effort, () => level)
+      void statusLine($)
+    }
+    return yield* next(e)
+  })
+    // Sidebar bookkeeping only: if it fails, pass the request on as it was.
+    .catch(async function* ($, e, next) {
+      return yield* next(e)
+    })
 
   // A permission ask: the Notification the binary reads as "needs input". It
   // waits ASK_SETTLE_MS for the mode to settle the ask; the call's own

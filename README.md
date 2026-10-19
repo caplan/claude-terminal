@@ -49,6 +49,8 @@ The sidebar is a set of cards. They appear and collapse as they become relevant,
 
 **Context breakdown.** The Context card shows how full the context window is. Open **Details** to see what fills it, as `/context` does: system prompt, tools, MCP tools, skills, memory files, messages and free space, with the MCP tools and memory files by size. **Refresh** counts it again (about one API request per tool). **Compact session** summarizes the conversation, as `/compact` does.
 
+**Model and effort.** Click the model name under the session name to switch this session's model or effort level, as `/model` and `/effort` do. Keys 1 to 4 pick Opus, Fable, Sonnet and Haiku. **More models** has the 1M-context variants, Opus Plan and the default from your settings. A switch made during a turn applies when the turn ends.
+
 **Pull request.** Needs the [GitHub CLI](https://cli.github.com) (`gh`), signed in. When the current branch has an open PR, a card surfaces a GitHub-style state pill (green **Open**, gray **Draft**) and the PR number as a clickable link to GitHub. A right-aligned chip shows the review decision (`approved`, `changes requested`, `review pending`) when one is set. The data comes from Claude Code's statusline payload — no `gh` auth needed on the claude-terminal side.
 
 **Jira ticket.** If your branch name or a recent prompt mentions a Jira key (e.g. `ABC-123`), the ticket number and title surface here as a clickable link. Requires a Jira CLI (`ankitpokhrel/jira-cli` or `go-jira`) on PATH.

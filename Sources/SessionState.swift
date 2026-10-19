@@ -128,6 +128,10 @@ struct SessionState: Codable, Equatable {
     var pullRequest: PullRequest?
     var contextBreakdown: ContextBreakdown?
     var isCompacting: Bool?
+    /// The main loop's effort level: `low`, `medium`, `high`, `xhigh` or `max`.
+    var effortLevel: String?
+    /// The `model` value in settings, what `/model default` returns to.
+    var defaultModel: String?
     var apiSendMs: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -136,6 +140,7 @@ struct SessionState: Codable, Equatable {
         case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput
         case permissionMode, pullRequest, contextBreakdown, isCompacting
+        case effortLevel, defaultModel
         case apiSendMs = "_apiSendMs"
     }
 
