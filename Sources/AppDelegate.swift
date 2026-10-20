@@ -404,6 +404,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 
     func applicationWillTerminate(_ notification: Notification) {
+        // A normal quit ends in exit(); only an unexpected one is logged.
+        isExpectedExit = true
         NotificationCenter.default.removeObserver(self)
         menuBarController?.teardown()
         menuBarController = nil

@@ -87,6 +87,7 @@ func parseCLIArguments() -> CLIArguments? {
             Arguments after -- are passed directly to the Claude CLI.
             """
             print(usage)
+            isExpectedExit = true
             exit(0)
         case "--name":
             i += 1
@@ -114,7 +115,7 @@ let cliArgs = parseCLIArguments()
 // before the app starts or sends a URL.
 let parsedOverrides: [String: Any]? = {
     guard let raw = cliArgs?.prefOverrides, !raw.isEmpty else { return nil }
-    guard let parsed = PrefOverrides.parse(raw) else { exit(2) }
+    guard let parsed = PrefOverrides.parse(raw) else { isExpectedExit = true; exit(2) }
     return parsed
 }()
 
@@ -169,6 +170,7 @@ func forwardToRunningInstanceAndExit(_ cliArgs: CLIArguments?) -> Never {
         try? proc.run()
         proc.waitUntilExit()
     }
+    isExpectedExit = true
     exit(0)
 }
 

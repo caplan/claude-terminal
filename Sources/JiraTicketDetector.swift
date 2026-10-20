@@ -11,6 +11,7 @@ struct JiraTicket {
 enum JiraTicketDetector {
     private static var cache: [String: JiraTicket?] = [:]
     private static var titleCache: [String: String] = [:]
+    private static var fetchingKeys: Set<String> = []
     private static var branchKeyCache: [String: String?] = [:]
     private static var baseURL: String?
     private static var baseURLResolved = false
@@ -54,9 +55,19 @@ enum JiraTicketDetector {
             return JiraTicket(key: key, title: cached, url: url)
         }
         let ticket = JiraTicket(key: key, title: nil, url: url)
+        // At most one fetch per key at a time: the sidebar asks again on each
+        // redraw until the title arrives.
+        guard !fetchingKeys.contains(key), let jira = resolveJiraPath() else { return ticket }
+        fetchingKeys.insert(key)
+        let env = AppDelegate.shared?.userShellEnvironment
         DispatchQueue.global(qos: .userInitiated).async {
-            if let title = fetchTitle(for: key) {
-                titleCache[key] = title
+            let title = fetchTitle(for: key, jira: jira, environment: env)
+            // The caches are read on the main thread with no lock, so they
+            // are written there too. A write from this thread raced the
+            // sidebar's reads, which can corrupt the dictionary.
+            DispatchQueue.main.async {
+                fetchingKeys.remove(key)
+                if let title { titleCache[key] = title }
             }
         }
         return ticket
@@ -104,15 +115,14 @@ enum JiraTicketDetector {
         return String(branch[Range(match.range, in: branch)!])
     }
 
-    private static func fetchTitle(for ticketKey: String) -> String? {
-        guard let jira = resolveJiraPath() else { return nil }
-
+    /// Runs off the main thread: it reads only its arguments, no static state.
+    private static func fetchTitle(for ticketKey: String, jira: String, environment: [String: String]?) -> String? {
         // jira-cli (ankitpokhrel/jira-cli): `jira issue view KEY --raw`
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: jira)
         proc.arguments = ["issue", "view", ticketKey, "--raw"]
-        if let env = AppDelegate.shared?.userShellEnvironment {
-            proc.environment = env
+        if let environment {
+            proc.environment = environment
         }
         let pipe = Pipe()
         proc.standardOutput = pipe
@@ -133,8 +143,8 @@ enum JiraTicketDetector {
         let proc2 = Process()
         proc2.executableURL = URL(fileURLWithPath: jira)
         proc2.arguments = ["view", ticketKey, "--gjq", "fields.summary"]
-        if let env = AppDelegate.shared?.userShellEnvironment {
-            proc2.environment = env
+        if let environment {
+            proc2.environment = environment
         }
         let pipe2 = Pipe()
         proc2.standardOutput = pipe2

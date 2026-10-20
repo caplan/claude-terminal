@@ -16,10 +16,16 @@ import Foundation
 ///   2. An uncaught-exception handler records ObjC/Swift exception name,
 ///      reason, and a symbolicated call stack (runs in normal context — safe
 ///      to use Foundation).
-///   3. POSIX signal handlers (SIGSEGV/SIGABRT/SIGILL/SIGBUS/SIGTRAP/SIGFPE)
-///      write a fixed marker plus a backtrace using only async-signal-safe
-///      calls, then re-raise the default handler so any system reporting still
-///      fires.
+///   3. POSIX signal handlers (SIGSEGV/SIGABRT/SIGILL/SIGBUS/SIGTRAP/SIGFPE,
+///      and SIGPIPE/SIGTERM/SIGHUP, which end the process with no crash
+///      report) write the signal number plus a backtrace using only
+///      async-signal-safe calls, then re-raise the default handler so any
+///      system reporting still fires. They run on an alternate stack, so a
+///      stack overflow (a layout or recursion loop) is recorded too: on the
+///      overflowed stack the handler itself would fault before writing.
+///   4. An atexit handler logs a backtrace when anything calls exit() other
+///      than the app's own launch paths (CLI handoff, --help, bad --pref) and
+///      a normal quit. It names the caller of an exit nothing else records.
 ///
 /// The log fd is opened once at launch and held for the process lifetime.
 
@@ -28,15 +34,43 @@ private var crashLogFD: Int32 = -1
 // Preformatted, allocation-free bytes for the signal path. Built once at
 // launch so the signal handler itself never touches the allocator (malloc may
 // be corrupt post-SIGSEGV). backtrace_symbols_fd + write are async-signal-safe.
-private let crashSignalMarker: [UInt8] = Array("\n*** claude-terminal: fatal signal — backtrace ***\n".utf8)
+private let crashSignalMarker: [UInt8] = Array("\n*** claude-terminal: fatal signal ".utf8)
+private let crashSignalMarkerEnd: [UInt8] = Array(" — backtrace ***\n".utf8)
+private let exitMarker: [UInt8] = Array("\n*** claude-terminal: exit() called — backtrace ***\n".utf8)
+
+/// Set before an exit the app means to make (CLI handoff, --help, a normal
+/// quit), so the atexit handler logs only unexpected ones.
+nonisolated(unsafe) var isExpectedExit = false
+
+/// Preallocated scratch for the signal path: backtrace frames and number
+/// digits. A Swift array made inside the handler would allocate.
+private let frameBuffer = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: 128)
+private let digitBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 12)
+
+/// Writes `n` in decimal with no allocation, for the signal path.
+private func writeNumber(_ fd: Int32, _ n: Int32) {
+    var value = n < 0 ? -Int(n) : Int(n)
+    var i = 12
+    repeat {
+        i -= 1
+        digitBuffer[i] = UInt8(48 + value % 10)
+        value /= 10
+    } while value > 0 && i > 0
+    _ = write(fd, digitBuffer + i, 12 - i)
+}
+
+private func writeBacktrace(_ fd: Int32) {
+    let count = backtrace(frameBuffer, 128)
+    backtrace_symbols_fd(frameBuffer, count, fd)
+    fsync(fd)
+}
 
 private func crashSignalHandler(_ sig: Int32) {
     if crashLogFD >= 0 {
         crashSignalMarker.withUnsafeBytes { _ = write(crashLogFD, $0.baseAddress, $0.count) }
-        var frames = [UnsafeMutableRawPointer?](repeating: nil, count: 128)
-        let count = backtrace(&frames, 128)
-        backtrace_symbols_fd(&frames, count, crashLogFD)
-        fsync(crashLogFD)
+        writeNumber(crashLogFD, sig)
+        crashSignalMarkerEnd.withUnsafeBytes { _ = write(crashLogFD, $0.baseAddress, $0.count) }
+        writeBacktrace(crashLogFD)
     }
     // Restore the default disposition and re-raise so normal crash handling
     // (and any system reporter) still runs.
@@ -90,8 +124,31 @@ func installCrashCapture() {
         fsync(crashLogFD)
     }
 
-    // POSIX signals commonly raised by crashes and Swift traps.
-    for sig in [SIGSEGV, SIGABRT, SIGILL, SIGBUS, SIGTRAP, SIGFPE] {
-        signal(sig, crashSignalHandler)
+    // An alternate stack for the handlers: a stack overflow leaves no room on
+    // the thread's own stack to run one. sigaltstack is per thread, so this
+    // covers the main thread, where AppKit and SwiftUI layout run. Allocated
+    // once and never freed.
+    _ = frameBuffer
+    _ = digitBuffer
+    let altStackSize = 256 * 1024
+    if let base = malloc(altStackSize) {
+        var ss = stack_t(ss_sp: base, ss_size: altStackSize, ss_flags: 0)
+        sigaltstack(&ss, nil)
+    }
+
+    // POSIX signals raised by crashes and Swift traps, and the ones that end
+    // the process silently (a write to a closed pipe, a kill, a hangup).
+    for sig in [SIGSEGV, SIGABRT, SIGILL, SIGBUS, SIGTRAP, SIGFPE, SIGPIPE, SIGTERM, SIGHUP] {
+        var action = sigaction()
+        action.__sigaction_u.__sa_handler = crashSignalHandler
+        action.sa_flags = SA_ONSTACK
+        sigemptyset(&action.sa_mask)
+        sigaction(sig, &action, nil)
+    }
+
+    atexit {
+        guard !isExpectedExit, crashLogFD >= 0 else { return }
+        exitMarker.withUnsafeBytes { _ = write(crashLogFD, $0.baseAddress, $0.count) }
+        writeBacktrace(crashLogFD)
     }
 }
