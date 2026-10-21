@@ -150,23 +150,51 @@ struct SidebarContextBreakdown: View {
         }
     }
 
+    /// Icon buttons; the name and what each does show on mouseover. While
+    /// one runs, a spinner takes its icon's place.
     private var buttons: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Spacer()
-            Button(isRefreshing ? "Refreshing…" : "Refresh") {
+            iconButton(
+                isRefreshing ? "Refreshing…" : "Refresh",
+                systemImage: "arrow.clockwise",
+                isBusy: isRefreshing,
+                help: "Refresh: count every tool and memory file again. This sends about one API request per tool."
+            ) {
                 refreshRequestedAt = Date().timeIntervalSince1970 * 1000
                 ClaudeCodeIntegration.sendModRequest("refresh", sessionId: sessionId)
             }
             .disabled(isRefreshing || isCompacting)
-            .help("Count every tool and memory file again. This sends about one API request per tool.")
-            Button(isCompacting ? "Compacting…" : "Compact session") {
+            iconButton(
+                isCompacting ? "Compacting…" : "Compact session",
+                systemImage: "arrow.down.right.and.arrow.up.left",
+                isBusy: isCompacting,
+                help: isCompacting ? "Compacting…" : "Compact session: summarize the conversation to free context, as /compact does."
+            ) {
                 ClaudeCodeIntegration.sendModRequest("compact", sessionId: sessionId)
             }
             .disabled(isCompacting)
-            .help("Summarize the conversation to free context, as /compact does.")
         }
         .controlSize(.small)
         .padding(.top, 4)
+    }
+
+    private func iconButton(
+        _ title: String, systemImage: String, isBusy: Bool, help: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Group {
+                if isBusy {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11, weight: .medium))
+                }
+            }
+            .frame(width: 18, height: 14)
+        }
+        .help(help)
+        .accessibilityLabel(title)
     }
 
     private func share(_ tokens: Int) -> Double {

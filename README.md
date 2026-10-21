@@ -47,7 +47,7 @@ The sidebar is a set of cards. They appear and collapse as they become relevant,
 
 **Working directory.** Your cwd with a project favicon auto-loaded from the folder. A GitHub icon appears next to it when cwd is inside a git repo *and* GitHub's public status API reports an incident — hover for the summary, click to open status.github.com.
 
-**Context breakdown.** The Context card shows how full the context window is. Open **Details** to see what fills it, as `/context` does: system prompt, tools, MCP tools, skills, memory files, messages and free space, with the MCP tools and memory files by size. **Refresh** counts it again (about one API request per tool). **Compact session** summarizes the conversation, as `/compact` does.
+**Context breakdown.** The Context card shows how full the context window is. Open **Details** to see what fills it, as `/context` does: system prompt, tools, MCP tools, skills, memory files, messages and free space, with the MCP tools and memory files by size. The circular arrow (**Refresh**) counts it again, at about one API request per tool. The inward arrows (**Compact session**) summarize the conversation, as `/compact` does. Hold the pointer over either button to see its name.
 
 **Model and effort.** Click the model name under the session name to switch this session's model or effort level, as `/model` and `/effort` do. Keys 1 to 4 pick Opus, Fable, Sonnet and Haiku. **More models** has the 1M-context variants, Opus Plan and the default from your settings. A switch made during a turn applies when the turn ends.
 
