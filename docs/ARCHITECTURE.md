@@ -70,6 +70,8 @@ The mod (`Resources/sidebar-bridge-mod/hooks/register.ts`) turns Claude Code's n
 
 Every helper run takes the `flock` on `.status.lock`, so runs finish one at a time. The mod therefore chains its runs (`send` waits for the one before it), and the 3 s poll skips a tick while the last one is still pending. Without that, runs started faster than they finish queued on the lock, and the last in line passed its 5 s timeout and was killed.
 
+A run can still pass its 5 s timeout when the Mac sleeps while it is in flight. With the lid closed, the Mac wakes for a few seconds at a time (a dark wake), a poll starts, the Mac sleeps again, and the timer counts the sleep. The helper itself takes about 30 ms. So a failed status poll is dropped with no message: the next poll, 3 s later, sends the same figures. Any other failed run (a hook event, a PR or breakdown update) is tried once more and logged only if that fails too.
+
 The mod hooks no `classic.*` event. On machines with managed settings, and for Team and Enterprise organizations, the built-in `cc-plugin-sec-default` plugin skips user-tier plugins on those events.
 
 Two choices need care:

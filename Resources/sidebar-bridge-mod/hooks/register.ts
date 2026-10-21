@@ -38,25 +38,46 @@ let helper: string | undefined
 // work and not the queue's.
 let lastSend: Promise<void> = Promise.resolve()
 
-function send($: EngineInterface, subcommand: 'hook' | 'statusline', payload: Record<string, unknown>) {
-  const run = lastSend.then(() => runHelper($, subcommand, payload))
+// `repeats`: the next status poll sends the same figures within STATUS_POLL_MS,
+// so a run that fails is dropped with no message.
+type SendOptions = { repeats?: boolean }
+
+function send($: EngineInterface, subcommand: 'hook' | 'statusline', payload: Record<string, unknown>, options: SendOptions = {}) {
+  const run = lastSend.then(() => runHelper($, subcommand, payload, options))
   lastSend = run
   return run
 }
 
-async function runHelper($: EngineInterface, subcommand: 'hook' | 'statusline', payload: Record<string, unknown>) {
+async function runHelper(
+  $: EngineInterface,
+  subcommand: 'hook' | 'statusline',
+  payload: Record<string, unknown>,
+  options: SendOptions,
+) {
   helper ??= await $.env.get('CLAUDE_TERMINAL_HOOK')
   if (!helper) return
+  const stdin = JSON.stringify({
+    session_id: await $.session.id(),
+    cwd: await $.session.cwd(),
+    ...payload,
+  })
+  const attempt = () => $.process.run([helper!, subcommand], { stdin, timeoutMs: TIMEOUT_MS })
   try {
-    await $.process.run([helper, subcommand], {
-      stdin: JSON.stringify({
-        session_id: await $.session.id(),
-        cwd: await $.session.cwd(),
-        ...payload,
-      }),
-      timeoutMs: TIMEOUT_MS,
-    })
+    await attempt()
   } catch (err) {
+    // A run throws when it passes TIMEOUT_MS or cannot start; a helper that
+    // fails exits non-zero and does not throw. The timeouts come almost all
+    // from sleep: a dark wake starts a run, the Mac sleeps again before it
+    // ends, and the timer counts the sleep. The helper takes about 30 ms.
+    if (options.repeats) return
+    // Nothing sends this one again, so it gets one more try: by then the Mac
+    // is awake. A run the timeout cut after its write does no harm twice.
+    try {
+      await attempt()
+      return
+    } catch (retryErr) {
+      err = retryErr
+    }
     $.ui.log(`sidebar-bridge: ${subcommand} failed: ${String(err)}`)
   }
 }
@@ -263,7 +284,7 @@ async function statusLine($: EngineInterface) {
       total_duration_ms: durationMs,
       total_api_duration_ms: await read($, apiMs),
     },
-  })
+  }, { repeats: true })
 }
 
 // This module load's timers. A reload starts a fresh module, and the engine

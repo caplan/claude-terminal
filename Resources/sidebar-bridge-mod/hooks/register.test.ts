@@ -467,3 +467,61 @@ test('a model or effort that is not a plain name runs nothing', async ($, on) =>
   await clock.advance(1000)
   expect(commands).toEqual([])
 })
+
+// A helper whose first `failures` runs of `subcommand` throw, as a run killed
+// at the 5 s timeout does when the Mac sleeps mid-run, and the lines the mod
+// logs.
+function timingOut(on: On, failures: number, subcommand: 'hook' | 'statusline' = 'hook') {
+  mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER, CLAUDE_TERMINAL_STATUS_DIR: '/status' })
+  const runs: string[] = []
+  const logs: string[] = []
+  let left = failures
+  on('process.run', ($, e) => {
+    if (e.argv[0] !== HELPER) return run({ exitCode: 1 })
+    runs.push(JSON.parse(e.init?.stdin ?? '{}').hook_event_name ?? e.argv[1])
+    if (e.argv[1] === subcommand && left > 0) {
+      left--
+      throw new Error(`$.process.run(${HELPER}) aborted: still running after 5000ms`)
+    }
+    return run({ exitCode: 0 })
+  })
+  on('ui.log', ($, e) => {
+    logs.push(JSON.stringify(e))
+    return { value: undefined }
+  })
+  on('fs.exists', () => ({ value: false }))
+  on('session.id', () => ({ value: 'cc-session' }))
+  on('session.cwd', () => ({ value: '/work' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+  return { runs, logs }
+}
+
+const subagentDone = { answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 't', agentId: 'a1' } as const
+
+test('a status poll that times out is dropped with no message and not retried', async ($, on) => {
+  const { runs, logs } = timingOut(on, 1, 'statusline')
+  const clock = mock.clock(on)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: true })
+  await clock.settle()
+  expect(runs).toEqual(['SessionStart', 'statusline'])
+  expect(logs).toEqual([])
+})
+
+test('a hook run that times out is tried once more, with no message when that works', async ($, on) => {
+  const { runs, logs } = timingOut(on, 1)
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete(subagentDone)
+  expect(runs).toEqual(['SubagentStop', 'SubagentStop'])
+  expect(logs).toEqual([])
+})
+
+test('a hook run that times out twice is logged once', async ($, on) => {
+  const { runs, logs } = timingOut(on, 2)
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete(subagentDone)
+  expect(runs).toEqual(['SubagentStop', 'SubagentStop'])
+  expect(logs).toHaveLength(1)
+})
