@@ -22,9 +22,18 @@ struct SidebarContextBreakdown: View {
         return breakdown.measuredAt < at
     }
 
-    /// The rows the bar draws, in /context's order, with tokens to show.
+    /// The rows by usage, largest first. The compact buffer and free space
+    /// are no usage, so they come last, in that order, whatever their size.
+    private var sortedRows: [ContextBreakdown.Row] {
+        let used = breakdown.rows.filter { $0.kind != "free" && $0.kind != "buffer" }
+            .sorted { $0.tokens > $1.tokens }
+        let rest = breakdown.rows.filter { $0.kind == "buffer" } + breakdown.rows.filter { $0.kind == "free" }
+        return used + rest
+    }
+
+    /// The rows the bar draws, in the same order as the list, with tokens to show.
     private var barRows: [ContextBreakdown.Row] {
-        breakdown.rows.filter { $0.kind != "free" && $0.tokens > 0 }
+        sortedRows.filter { $0.kind != "free" && $0.tokens > 0 }
     }
 
     var body: some View {
@@ -49,7 +58,7 @@ struct SidebarContextBreakdown: View {
     private var details: some View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 3) {
-                ForEach(breakdown.rows, id: \.self) { row in
+                ForEach(sortedRows, id: \.self) { row in
                     rowView(row)
                 }
             }
