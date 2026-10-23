@@ -168,7 +168,10 @@ test('an ask still open after the wait sends a permission Notification', async (
 test('an ask the mode settles in time sends no Notification', async ($, on) => {
   const sent = helper(on)
   const clock = mock.clock(on)
-  on('tool.check', () => ({ decision: 'ask' as const }))
+  // The first check asks; the mode then allows it. Since 2.1.309 the test
+  // kit's tool.call runs the check again, and a second "ask" fails the call.
+  let checks = 0
+  on('tool.check', () => (checks++ === 0 ? { decision: 'ask' as const } : { decision: 'allow' as const }))
   on('tool.call', () => ({ result: { stdout: '' }, isError: false }))
   await $.tool.check({ tool: 'Bash', input: { command: 'rm x' }, tool_use_id: 't5' })
   await clock.advance(1500)
@@ -524,4 +527,18 @@ test('a hook run that times out twice is logged once', async ($, on) => {
   await $.turn.complete(subagentDone)
   expect(runs).toEqual(['SubagentStop', 'SubagentStop'])
   expect(logs).toHaveLength(1)
+})
+
+test("the helper runs from /, so a removed session directory cannot stop it", async ($, on) => {
+  mock.env(on, { CLAUDE_TERMINAL_HOOK: HELPER, CLAUDE_TERMINAL_STATUS_DIR: '/status' })
+  const cwds: (string | undefined)[] = []
+  on('process.run', ($, e) => {
+    if (e.argv[0] === HELPER) cwds.push(e.init?.cwd)
+    return run({ exitCode: 0 })
+  })
+  on('session.id', () => ({ value: 'cc-session' }))
+  on('session.cwd', () => ({ value: '/work/.claude/worktrees/removed' }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, reason: 'answer', turnId: 't', agentId: 'a1' })
+  expect(cwds).toEqual(['/'])
 })

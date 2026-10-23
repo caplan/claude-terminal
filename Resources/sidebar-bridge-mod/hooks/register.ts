@@ -61,7 +61,11 @@ async function runHelper(
     cwd: await $.session.cwd(),
     ...payload,
   })
-  const attempt = () => $.process.run([helper!, subcommand], { stdin, timeoutMs: TIMEOUT_MS })
+  // cwd "/": the helper reads the session's directory from stdin, never its
+  // own. Run in the session's directory, a spawn fails once that directory is
+  // gone (a removed git worktree, say), and posix_spawn reports it as ENOENT on
+  // the helper's path.
+  const attempt = () => $.process.run([helper!, subcommand], { stdin, cwd: '/', timeoutMs: TIMEOUT_MS })
   try {
     await attempt()
   } catch (err) {

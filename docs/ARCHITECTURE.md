@@ -72,6 +72,8 @@ Every helper run takes the `flock` on `.status.lock`, so runs finish one at a ti
 
 A run can still pass its 5 s timeout when the Mac sleeps while it is in flight. With the lid closed, the Mac wakes for a few seconds at a time (a dark wake), a poll starts, the Mac sleeps again, and the timer counts the sleep. The helper itself takes about 30 ms. So a failed status poll is dropped with no message: the next poll, 3 s later, sends the same figures. Any other failed run (a hook event, a PR or breakdown update) is tried once more and logged only if that fails too.
 
+The helper runs with `cwd: "/"`. It reads the session's directory from its stdin JSON, never its own working directory. Run in the session's directory, every spawn failed once that directory was removed (a deleted git worktree, say): `posix_spawn` cannot enter the missing directory and reports ENOENT on the helper's own path, which looks like a missing binary.
+
 The mod hooks no `classic.*` event. On machines with managed settings, and for Team and Enterprise organizations, the built-in `cc-plugin-sec-default` plugin skips user-tier plugins on those events.
 
 Two choices need care:
