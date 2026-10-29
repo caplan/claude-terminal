@@ -341,7 +341,7 @@ extension AppDelegate {
         return firstDescendant(of: hosted, ofType: GhosttyNSView.self)
     }
 
-    private func firstDescendant<T: NSView>(of view: NSView, ofType type: T.Type) -> T? {
+    func firstDescendant<T: NSView>(of view: NSView, ofType type: T.Type) -> T? {
         for sub in view.subviews {
             if let match = sub as? T { return match }
             if let nested = firstDescendant(of: sub, ofType: type) { return nested }

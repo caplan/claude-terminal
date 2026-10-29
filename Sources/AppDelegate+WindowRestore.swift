@@ -59,21 +59,31 @@ extension AppDelegate {
         return nil
     }
 
-    /// Reopens one saved window. Every session resumes with `--continue`.
-    /// Until tabs can be added to a window, only the first session of a
-    /// snapshot is reopened.
+    /// Reopens one saved window with every session as a tab, in saved order.
+    /// Every session resumes with `--continue`.
     func restoreWindow(snapshot: WindowSnapshot) {
-        guard let config = snapshot.sessions.first else { return }
-        let (_, sessionId) = installWindow(
-            workingDirectory: config.workingDirectory,
-            claudeOptions: Self.continueOptions(config.claudeOptions),
-            sessionName: config.sessionName,
+        guard !snapshot.sessions.isEmpty else { return }
+        let windowId = createWindow(
             sidebarVisible: snapshot.sidebarVisible,
             sidebarWidth: snapshot.sidebarWidth.map { CGFloat($0) },
-            railWidth: snapshot.railWidth.map { CGFloat($0) },
-            storedConfig: config
+            railWidth: snapshot.railWidth.map { CGFloat($0) }
         )
-        restoreDocTabs(from: config, sessionId: sessionId)
+        var restoredIds: [UUID] = []
+        for config in snapshot.sessions {
+            guard let sessionId = addSession(
+                to: windowId,
+                workingDirectory: config.workingDirectory,
+                claudeOptions: Self.continueOptions(config.claudeOptions),
+                sessionName: config.sessionName,
+                storedConfig: config,
+                activate: false
+            ) else { continue }
+            restoreDocTabs(from: config, sessionId: sessionId)
+            restoredIds.append(sessionId)
+        }
+        guard !restoredIds.isEmpty else { return }
+        let index = min(max(snapshot.activeIndex, 0), restoredIds.count - 1)
+        activateSession(restoredIds[index])
     }
 
     /// Adds `--continue` to a saved option string if it is not there yet.

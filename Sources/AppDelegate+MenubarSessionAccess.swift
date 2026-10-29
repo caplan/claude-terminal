@@ -5,9 +5,11 @@ extension AppDelegate {
         sessions.map { ($0.key, $0.value.monitor) }
     }
 
-    /// Brings the window that holds `sessionId` to the front.
+    /// Brings the window that holds `sessionId` to the front, with that
+    /// session as its active tab.
     func focusSession(sessionId: UUID) {
         guard let window = window(forSession: sessionId) else { return }
+        activateSession(sessionId)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

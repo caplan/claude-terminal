@@ -39,8 +39,14 @@ extension AppDelegate {
     private func makeFileSubmenu() -> NSMenu {
         let menu = NSMenu(title: "File")
         menu.addItem(withTitle: "New Session", action: #selector(newWindowFromMenu), keyEquivalent: "n")
+        menu.addItem(withTitle: "New Tab", action: #selector(newTabFromMenu), keyEquivalent: "t")
         menu.addItem(withTitle: "Open Session...", action: #selector(newWindowFromMenu), keyEquivalent: "o")
-        menu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        menu.addItem(.separator())
+        // Cmd+W closes the active tab; on the last tab that closes the window.
+        // Cmd+Shift+W always closes the window. An uppercase key equivalent
+        // means Shift in AppKit.
+        menu.addItem(withTitle: "Close Tab", action: #selector(closeTabFromMenu), keyEquivalent: "w")
+        menu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W")
         return menu
     }
 
@@ -75,6 +81,14 @@ extension AppDelegate {
 
     private func makeWindowSubmenu() -> NSMenu {
         let menu = NSMenu(title: "Window")
+        // Tab navigation. Each item claims a key that Ghostty also binds, so
+        // the vendored key path hands it to the menu instead of the engine.
+        let next = menu.addItem(withTitle: "Show Next Tab", action: #selector(showNextTab), keyEquivalent: "]")
+        next.keyEquivalentModifierMask = [.command, .shift]
+        let previous = menu.addItem(withTitle: "Show Previous Tab", action: #selector(showPreviousTab), keyEquivalent: "[")
+        previous.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(withTitle: "Move Tab to New Window", action: #selector(moveTabToNewWindowFromMenu), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.delegate = self
         windowMenu = menu
         return menu
@@ -84,6 +98,39 @@ extension AppDelegate {
 
     @objc func newWindowFromMenu() {
         createNewWindow()
+    }
+
+    @objc func newTabFromMenu() {
+        createNewTab()
+    }
+
+    @objc func closeTabFromMenu() {
+        guard let front = frontSession() else { return }
+        closeSession(front.record.sessionId)
+    }
+
+    @objc func showNextTab() {
+        stepTab(by: 1)
+    }
+
+    @objc func showPreviousTab() {
+        stepTab(by: -1)
+    }
+
+    @objc func moveTabToNewWindowFromMenu() {
+        guard let front = frontSession() else { return }
+        moveSessionToNewWindow(front.record.sessionId)
+    }
+
+    /// Moves the active tab of the front window by `delta`, wrapping around.
+    private func stepTab(by delta: Int) {
+        guard let (windowId, _) = resolveFrontWindow(),
+              let windowTabs = windowSessions[windowId],
+              windowTabs.sessionIds.count > 1,
+              let active = windowTabs.activeSessionId,
+              let index = windowTabs.sessionIds.firstIndex(of: active) else { return }
+        let count = windowTabs.sessionIds.count
+        activateSession(windowTabs.sessionIds[((index + delta) % count + count) % count])
     }
 
     @objc func openPreferences() {

@@ -2,7 +2,7 @@
 
 ## Overview
 
-claude-terminal is a multi-window macOS AppKit application that embeds Ghostty's terminal engine via `GhosttyKit.xcframework`. Each window runs one Claude Code session with a live SwiftUI sidebar. A Claude Code mod, loaded into each session, feeds the sidebar through a small compiled helper binary.
+claude-terminal is a multi-window macOS AppKit application that embeds Ghostty's terminal engine via `GhosttyKit.xcframework`. Each window holds one or more Claude Code sessions as tabs, each with its own terminal surface and live SwiftUI sidebar; only the active tab is visible. A Claude Code mod, loaded into each session, feeds the sidebar through a small compiled helper binary.
 
 Bundle ID: `org.claire.claude-terminal`.
 
@@ -10,7 +10,10 @@ Bundle ID: `org.claire.claude-terminal`.
 
 ```
 main.swift                  → NSApplication.shared.run() + CLI argument parsing
-AppDelegate.swift           → window management, menus, session records, URL scheme
+AppDelegate.swift           → app lifecycle, session records, URL scheme, directory picker
+AppDelegate+SessionLifecycle.swift → createWindow / addSession / activateSession / closeSession / moveSessionToNewWindow
+AppDelegate+DevCommands.swift → dev-instance command file for driving tabs without keyboard input (CONTRIBUTING.md)
+WindowRootView.swift        → window root: one ContentView per session, only the active one visible
 SessionTabs.swift           → SessionRecord (one session's monitor, doc tabs, surface, config), WindowSessions (a window's tabs), Save & Quit snapshot types
 SessionStatusStyle.swift    → status color + label shared by the menu-bar popover and the tab bar
 ContentView.swift           → one session's view: doc tab bar + terminal + doc/image tabs + sidebar

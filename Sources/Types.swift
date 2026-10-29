@@ -301,7 +301,9 @@ class TabManager: ObservableObject {
     func closeRuntimeSurfaceWithConfirmation(tabId: UUID, surfaceId: UUID) {}
     func closeRuntimeSurface(tabId: UUID, surfaceId: UUID) {}
     func closePanelAfterChildExited(tabId: UUID, surfaceId: UUID) {
-        window?.close()
+        // A clean claude exit closes that session's tab; the last tab of a
+        // window closes the window.
+        AppDelegate.shared?.closeSession(forTab: tabId)
     }
     func dismissNotificationOnDirectInteraction(tabId: UUID, surfaceId: UUID) {}
     func focusedSurfaceId(for tabId: UUID) -> UUID? { nil }

@@ -104,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if !launchedViaURL {
             createNewWindow()
         }
+        startDevCommandPollerIfEnabled()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -187,9 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !windows.isEmpty else { return .terminateNow }
 
+        let count = sessions.count
         let alert = NSAlert()
         alert.messageText = "Save open windows?"
-        alert.informativeText = "Reopen \(windows.count) session\(windows.count == 1 ? "" : "s") on next launch."
+        alert.informativeText = "Reopen \(count) session\(count == 1 ? "" : "s") on next launch."
         alert.addButton(withTitle: "Save & Quit")
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
@@ -241,63 +243,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
-    }
-
-    /// Shared window builder. Creates NSWindow + ContentView + the window's
-    /// state objects and its first SessionRecord, registers everything in the
-    /// dictionaries, and returns the ids so restore paths can reopen doc tabs.
-    @discardableResult
-    func installWindow(
-        workingDirectory dir: String,
-        claudeOptions opts: String?,
-        sessionName: String?,
-        sidebarVisible: Bool,
-        sidebarWidth: CGFloat? = nil,
-        railWidth: CGFloat? = nil,
-        storedConfig: SessionConfig? = nil
-    ) -> (windowId: UUID, sessionId: UUID) {
-        let windowId = UUID()
-        let sidebarState = SidebarState(defaultVisible: sidebarVisible, width: sidebarWidth)
-        let windowTabs = WindowSessions(windowId: windowId, railWidth: railWidth)
-        let resolvedName = sessionName ?? (dir as NSString).lastPathComponent
-        let record = makeSessionRecord(workingDirectory: dir, claudeOptions: opts, sessionName: resolvedName, storedConfig: storedConfig)
-        let sessionId = record.sessionId
-
-        let contentView = ContentView(record: record, sidebarState: sidebarState)
-
-        let window = ClaudeTerminalWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.windowId = windowId
-        window.title = record.monitor.state.sessionName ?? resolvedName
-        window.minSize = NSSize(width: 600, height: 300)
-        window.contentMinSize = NSSize(width: 600, height: 300)
-
-        let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 600)
-        window.contentView = hostingView
-
-        window.setFrameAutosaveName("claude-terminal-\(resolvedName)")
-        if !window.setFrameUsingName(window.frameAutosaveName) {
-            window.center()
-        }
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-
-        windows[windowId] = window
-        sidebarStates[windowId] = sidebarState
-        windowTabs.sessionIds = [sessionId]
-        windowTabs.activeSessionId = sessionId
-        windowSessions[windowId] = windowTabs
-        registerSession(record, in: window)
-
-        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
-        print("[claude-terminal] Window \(windowId) (session \(sessionId), dir \(dir), opts: \(opts ?? "none"))")
-        return (windowId, sessionId)
     }
 
     /// Builds the per-session objects: monitor, doc tabs, terminal surface
@@ -369,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func openWindowDirectly(workingDirectory dir: String, claudeOptions opts: String?, sessionName: String?) {
         let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
-        installWindow(
+        openWindow(
             workingDirectory: dir,
             claudeOptions: opts,
             sessionName: sessionName,
@@ -383,12 +328,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let opts = mergeClaudeOptions(base: claudeOptions, extra: result.options)
         let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
-        installWindow(
+        openWindow(
             workingDirectory: result.dir,
             claudeOptions: opts,
             sessionName: result.sessionName,
             sidebarVisible: sidebarVisible
         )
+    }
+
+    /// New Tab: the picker starts at the active session's directory. When the
+    /// chosen directory is already open in a live session, `--continue` is
+    /// dropped so two tabs never resume the same conversation.
+    @objc func createNewTab() {
+        guard let (windowId, _) = resolveFrontWindow() else {
+            createNewWindow()
+            return
+        }
+        let startDir = activeSession(in: windowId)?.config.workingDirectory
+        guard let result = runWorkingDirectoryPicker(initialDir: startDir, initialName: nil) else { return }
+        var opts = result.options
+        let alreadyOpen = sessions.values.contains { $0.config.workingDirectory == result.dir }
+        if alreadyOpen, opts.contains("--continue") {
+            opts = opts.replacingOccurrences(of: "--continue", with: "")
+                .replacingOccurrences(of: "  ", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+        }
+        addSession(to: windowId, workingDirectory: result.dir, claudeOptions: opts, sessionName: result.sessionName)
     }
 
     /// Runs the directory-chooser modal with the session-name field and the
@@ -397,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// path, the resolved session name (falls back to the dir's last path
     /// component), and the assembled `--name`/`--continue`/`--dangerously…`
     /// option fragment ready to splice into the Claude argv.
-    private func runWorkingDirectoryPicker(
+    func runWorkingDirectoryPicker(
         initialDir: String?,
         initialName: String?
     ) -> (dir: String, sessionName: String, options: String)? {

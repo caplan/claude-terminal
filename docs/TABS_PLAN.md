@@ -1,6 +1,36 @@
 # Session tabs: research and plan
 
-Status: phase 1 done on 2026-10-29 on branch `feature/session-tabs`. Decision: option B (our own tabs, one window holds many sessions). The phase 0 spike is in `git stash` on `spike/portal-two-surfaces`. Next: phase 2.
+Status: phase 2 done on 2026-10-29 on branch `feature/session-tabs`. Decision: option B (our own tabs, one window holds many sessions). The phase 0 spike is in `git stash` on `spike/portal-two-surfaces`. Next: phase 3, the tab bar.
+
+## Phase 2 result (2026-10-29)
+
+Branch `feature/session-tabs`, uncommitted on top of phase 1. A window now holds several sessions. There is no tab bar yet, so the only way to see the tabs is the window title and the keys.
+
+- New `Sources/AppDelegate+SessionLifecycle.swift`: `createWindow`, `openWindow`, `addSession`, `activateSession`, `focusTerminal`, `closeSession`, `closeSession(forTab:)` and `moveSessionToNewWindow`. `installWindow` is gone.
+- New `Sources/WindowRootView.swift`: a `ZStack` of one `ContentView` per session, keyed by session id, with only the active one visible, hit-testable and on top. The switch crossfades over 150 ms.
+- `activateSession` sets the title and, on the next run-loop turn, makes the session's `GhosttyNSView` the first responder. The Metal view, not the scroll view around it: the vendored `performKeyEquivalent` acts only when the first responder is inside `GhosttyNSView`.
+- `closeSession` activates the neighbor to the right, or to the left at the end of the row, then drops the record one run-loop turn later so SwiftUI unmounts the view first. The last tab closes the window.
+- `TabManager.closePanelAfterChildExited` closes one tab. A tab whose `claude` exits with status 0 closes itself and the window stays.
+- `restoreWindow` reopens every session of a snapshot and activates `activeIndex`.
+- `focusSession` (menu bar popover) activates the tab, then brings the window to the front.
+- Pulled forward from phase 4, because the lifecycle needed entry points: File > New Tab (Cmd+T), Close Tab (Cmd+W), Close Window (Cmd+Shift+W); Window > Show Next Tab (Cmd+Shift+]), Show Previous Tab (Cmd+Shift+[), Move Tab to New Window. Cmd+1 to 9, Ctrl+Tab, Toggle Tab Bar and the window-list renumbering are still phase 4.
+- New Tab rule: the picker starts at the active session's directory, and when the chosen directory is already open in a live session, `--continue` is dropped so two tabs never resume one conversation.
+- New `Sources/AppDelegate+DevCommands.swift`: a dev-instance-only command file (`new-tab`, `close-tab`, `next`, `prev`, `activate`, `move-new-window`, `close-window`, `save`, `status`, `quit`) with a status report after each command. The computer-use tier for terminal apps allows no keyboard input, so this is how a dev build gets checked. Recipe in CONTRIBUTING.md.
+
+Checked on a dev build, with the status report after each step:
+
+| Check | Result |
+|---|---|
+| Restore a two-tab snapshot with `activeIndex` 1 | Pass. Title `tab-b`, focus inside its Metal view, `tab-a` mounted hidden. |
+| Previous tab | Pass. `tab-a` active, title and focus follow. |
+| New tab | Pass. Third tab appended and active. 3 sessions, 3 surfaces. |
+| Close tab at the end of the row | Pass. Left neighbor active. 2 surfaces: the closed one is freed. |
+| Tab whose `claude --version` exits at once | Pass. Only that tab closed; the window stayed with 2 tabs. |
+| Move tab to new window | Pass. New window 40 pt offset, surface re-parented and rendering, focus inside it. The vendored code never calls `unbind`, so re-parenting is a plain `bind()` to the new host. |
+| Close one of the two windows | Pass. Its session unregistered, 1 surface left. |
+| Save with three tabs | Pass. Payload lists all three in order with `activeIndex` 0 and the sidebar settings. |
+
+Found on the way: `resolveFrontWindow()` falls back to an arbitrary window when the app is not active, because `NSApp.keyWindow` and `NSApp.mainWindow` are both nil then. Menu commands cannot fire while the app is inactive, so this only matters for the URL-scheme and open-file paths, as it did before tabs.
 
 ## Phase 1 result (2026-10-29)
 
