@@ -183,7 +183,11 @@ let bundleId = Bundle.main.bundleIdentifier ?? "org.claire.claude-terminal"
 let anotherInstanceViaLS = NSRunningApplication
     .runningApplications(withBundleIdentifier: bundleId)
     .contains(where: { $0 != .current })
-let gotSingleInstanceLock = acquireSingleInstanceLock()
+// A development build runs under its own bundle id next to the release app
+// (see CONTRIBUTING.md), so the WindowServer collision the lock guards
+// against cannot happen. Skip the lock when asked.
+let isDevInstance = ProcessInfo.processInfo.environment["CLAUDE_TERMINAL_DEV_INSTANCE"] == "1"
+let gotSingleInstanceLock = isDevInstance || acquireSingleInstanceLock()
 if anotherInstanceViaLS || !gotSingleInstanceLock {
     forwardToRunningInstanceAndExit(cliArgs)
 }

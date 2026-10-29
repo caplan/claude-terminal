@@ -10,8 +10,10 @@ Bundle ID: `org.claire.claude-terminal`.
 
 ```
 main.swift                  → NSApplication.shared.run() + CLI argument parsing
-AppDelegate.swift           → window management, menus, session monitors, URL scheme
-ContentView.swift           → SwiftUI root: tab bar + terminal + doc/image tabs + sidebar
+AppDelegate.swift           → window management, menus, session records, URL scheme
+SessionTabs.swift           → SessionRecord (one session's monitor, doc tabs, surface, config), WindowSessions (a window's tabs), Save & Quit snapshot types
+SessionStatusStyle.swift    → status color + label shared by the menu-bar popover and the tab bar
+ContentView.swift           → one session's view: doc tab bar + terminal + doc/image tabs + sidebar
 SidebarView.swift           → live session sidebar (status, activity chart, docs, context, cost, tasks, subagents, github status)
 SidebarHostView.swift       → NSViewRepresentable that gives the sidebar its own NSHostingView
 SidebarState.swift          → sidebar visibility + resizable width
@@ -19,12 +21,12 @@ SessionMonitor.swift        → watches ~/.claude-terminal/sessions/<id>/status.
 SessionState.swift          → Codable model for session state
 TranscriptTailer.swift      → tails ~/.claude/projects/<sanitized>/<cc-session>.jsonl to surface assistant prose + background-task notifications
 GitHubStatusMonitor.swift   → singleton that polls githubstatus.com every 30s with a 500ms timeout + GitRepoDetector
-DocumentTabState.swift      → per-window doc-tab model (open/close/find/zoom, md + image)
+DocumentTabState.swift      → per-session doc-tab model (open/close/find/zoom, md + image)
 DocumentExcerptCache.swift  → caches first-heading / first-line for sidebar markdown cards
 MarkdownViewerView.swift    → WKWebView wrapper for the inline markdown tab
 ImageViewerView.swift       → NSScrollView + NSImageView tab for viewing images; auto-reloads on write
 DocFindBar.swift            → in-tab Cmd+F find overlay
-TerminalTabBar.swift        → compact per-window tab bar
+TerminalTabBar.swift        → compact per-session doc tab bar
 MenuBarController.swift     → NSStatusItem + NSPanel for the menu-bar session grid
 MenuBarPopoverView.swift    → SwiftUI grid of session cards for the menu-bar popup
 SessionListViewModel.swift  → aggregates active + past sessions (live updates)

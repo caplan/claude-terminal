@@ -57,10 +57,7 @@ final class SessionListViewModel: ObservableObject {
 
     private func rebuildSessions() {
         let active = buildActiveSessions()
-        let activeIds = Set(active.compactMap { entry -> UUID? in
-            guard let snapshots = AppDelegate.shared?.activeSessionSnapshots() else { return nil }
-            return snapshots.first(where: { $0.windowId == entry.id })?.monitor.sessionId
-        })
+        let activeIds = Set(active.map(\.id))
         let activeDirs = Set(active.map(\.workingDirectory))
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -74,10 +71,10 @@ final class SessionListViewModel: ObservableObject {
 
     private func buildActiveSessions() -> [SessionEntry] {
         guard let snapshots = AppDelegate.shared?.activeSessionSnapshots() else { return [] }
-        return snapshots.map { (windowId, monitor) in
+        return snapshots.map { (sessionId, monitor) in
             let state = monitor.state
             return SessionEntry(
-                id: windowId,
+                id: sessionId,
                 sessionName: state.sessionName ?? (state.workingDirectory as NSString?)?.lastPathComponent ?? "Session",
                 workingDirectory: state.workingDirectory ?? "",
                 status: state.status,
@@ -86,7 +83,7 @@ final class SessionListViewModel: ObservableObject {
                 costUsd: state.cost?.totalCostUsd,
                 lastUpdate: Date(),
                 isActive: true,
-                customBackground: AppDelegate.shared?.customTerminalBackgrounds[windowId]
+                customBackground: AppDelegate.shared?.customTerminalBackgrounds[sessionId]
             )
         }
     }

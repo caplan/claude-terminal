@@ -53,7 +53,7 @@ struct MenuBarPopoverView: View {
     private func handleTap(_ session: SessionEntry) {
         dismiss()
         if session.isActive {
-            AppDelegate.shared?.focusWindow(windowId: session.id)
+            AppDelegate.shared?.focusSession(sessionId: session.id)
         } else {
             AppDelegate.shared?.openPastSession(directory: session.workingDirectory, sessionName: session.sessionName)
         }
@@ -189,27 +189,11 @@ private struct SessionCard: View {
     }
 
     private func statusColor(_ status: SessionStatus) -> Color {
-        switch status {
-        case .idle: return .gray
-        case .thinking: return Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.95, green: 0.65, blue: 0.15, alpha: 1)
-                : NSColor(red: 0.75, green: 0.45, blue: 0.05, alpha: 1)
-        })
-        case .toolUse: return .blue
-        case .streaming: return .green
-        case .disconnected: return Color(nsColor: .separatorColor)
-        }
+        SessionStatusStyle.color(status)
     }
 
     private func statusLabel(_ status: SessionStatus) -> String {
-        switch status {
-        case .idle: return "Idle"
-        case .thinking: return "Thinking..."
-        case .toolUse: return "Using tool"
-        case .streaming: return "Streaming"
-        case .disconnected: return "Disconnected"
-        }
+        SessionStatusStyle.label(status)
     }
 
     private func compactDir(_ path: String) -> String {

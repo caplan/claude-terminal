@@ -103,19 +103,17 @@ extension AppDelegate {
     }
 
     @objc func findInDoc() {
-        guard let (windowId, window) = resolveFrontWindow() else { return }
+        guard let front = frontSession() else { return }
         // If a markdown doc is visible, route Cmd+F to the doc find bar.
         // Otherwise drive the Ghostty terminal's native search (start_search
         // creates the SearchState, which mounts SurfaceSearchOverlay and
         // pipes keystrokes back into the Ghostty runtime via search:<needle>).
-        if let tabState = documentTabStates[windowId], tabState.active != nil {
-            window.makeFirstResponder(window.contentView)
-            tabState.triggerFind()
+        if front.record.tabState.active != nil {
+            front.window.makeFirstResponder(front.window.contentView)
+            front.record.tabState.triggerFind()
             return
         }
-        let frontSurface = TerminalSurfaceRegistry.shared.allSurfaces()
-            .first { $0.hostedView.window === window }
-        _ = frontSurface?.performBindingAction("start_search")
+        _ = front.record.surface.performBindingAction("start_search")
     }
 
     @objc func findNextInDoc() {
@@ -127,8 +125,7 @@ extension AppDelegate {
     }
 
     func frontTabState() -> DocumentTabState? {
-        guard let (windowId, _) = resolveFrontWindow() else { return nil }
-        return documentTabStates[windowId]
+        frontSession()?.record.tabState
     }
 
     @objc func showAboutPanel() {
@@ -231,7 +228,7 @@ extension AppDelegate {
     @objc func renameSession(_ sender: Any? = nil) {
         guard let keyWindow = NSApp.keyWindow else { return }
         guard let (windowId, _) = windows.first(where: { $0.value === keyWindow }),
-              let monitor = sessionMonitors[windowId] else { return }
+              let monitor = activeSession(in: windowId)?.monitor else { return }
 
         let alert = NSAlert()
         alert.messageText = "Rename Session"
@@ -251,10 +248,4 @@ extension AppDelegate {
         keyWindow.title = name.isEmpty ? "Session" : name
     }
 
-    func windowForSession(_ sessionId: UUID) -> NSWindow? {
-        for (windowId, monitor) in sessionMonitors {
-            if monitor.sessionId == sessionId { return windows[windowId] }
-        }
-        return nil
-    }
 }

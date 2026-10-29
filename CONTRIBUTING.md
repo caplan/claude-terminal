@@ -36,6 +36,22 @@ Regenerate the Xcode project after editing `project.yml`:
 xcodegen generate
 ```
 
+### Running a dev build next to the release app
+
+`open -n` on a Debug build only works when no release build is running: the app holds a single-instance lock in `~/.claude-terminal/instance.lock`, and a second launch forwards to the running instance and exits. Two instances under the same bundle id would also collide in the WindowServer. To run a dev build while the release app keeps your sessions open, give it its own bundle id and tell it to skip the lock:
+
+```bash
+xcodebuild -project claude-terminal.xcodeproj -scheme claude-terminal -configuration Debug \
+  -derivedDataPath /tmp/ct-dev PRODUCT_BUNDLE_IDENTIFIER=org.claire.claude-terminal.dev build
+open --env CLAUDE_TERMINAL_DEV_INSTANCE=1 -n /tmp/ct-dev/Build/Products/Debug/claude-terminal.app
+```
+
+`CLAUDE_TERMINAL_DEV_INSTANCE=1` skips the lock and the CLI symlink installer, so the dev build cannot repoint `~/.local/bin/claude-terminal` at itself. Use `open`, not the binary path: a process started from a sandboxed shell gets no WindowServer connection and shows no window. The dev build has its own defaults domain (`defaults delete org.claire.claude-terminal.dev` resets it) and registers with LaunchServices on first launch; unregister it when done so it does not claim the `claude-terminal://` scheme:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u /tmp/ct-dev/Build/Products/Debug/claude-terminal.app
+```
+
 ### The sidebar-bridge mod
 
 `Resources/sidebar-bridge-mod/` is the Claude Code mod that feeds the sidebar. Check it after each change, and again when Claude Code updates:

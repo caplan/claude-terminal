@@ -1,73 +1,26 @@
 import SwiftUI
 
+/// One session's view: its terminal, its doc tabs and its sidebar. The
+/// TerminalSurface comes in through the SessionRecord, which AppDelegate owns,
+/// so this view can be rebuilt by SwiftUI without spawning a new terminal.
 struct ContentView: View {
-    @StateObject private var terminalSurface: TerminalSurface
+    @ObservedObject var terminalSurface: TerminalSurface
     @ObservedObject var monitor: SessionMonitor
     @ObservedObject var sidebarState: SidebarState
     @ObservedObject var tabState: DocumentTabState
 
     let sessionId: UUID
+    /// False when another tab of the same window is in front. The terminal
+    /// then stays mounted but hidden, so the portal binding survives.
+    var isActiveSession: Bool
 
-    init(tabId: UUID, sessionId: UUID, sidebarState: SidebarState, monitor: SessionMonitor, tabState: DocumentTabState, workingDirectory: String? = nil, claudeOptions: String? = nil) {
-        self.sessionId = sessionId
+    init(record: SessionRecord, sidebarState: SidebarState, isActiveSession: Bool = true) {
+        self.sessionId = record.sessionId
+        self.terminalSurface = record.surface
+        self.monitor = record.monitor
+        self.tabState = record.tabState
         self.sidebarState = sidebarState
-        self.monitor = monitor
-        self.tabState = tabState
-
-        var config = CtSurfaceConfigTemplate()
-        let claudeBin = AppDelegate.shared?.claudePath ?? "claude"
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        config.command = "\(shell) -l"
-        var claudeCmd = claudeBin
-        if let claudeOptions, !claudeOptions.isEmpty {
-            claudeCmd += " \(claudeOptions)"
-        }
-        if let workingDirectory, !workingDirectory.isEmpty {
-            config.workingDirectory = workingDirectory
-        }
-        config.environmentVariables["CLAUDE_TERMINAL_SESSION_ID"] = sessionId.uuidString
-        // CLAUDE_CODE_EAGER_FLUSH triggers a flush call after every assistant
-        // turn step inside the CLI (`await sR()`), which makes the transcript
-        // JSONL hit disk sooner so our TranscriptTailer's DispatchSource fires
-        // earlier. Doesn't add partial-message chunks (only --include-partial-
-        // messages does, and it requires --print/--output-format=stream-json),
-        // but it does shave latency between Claude finishing a step and us
-        // seeing the bytes.
-        config.environmentVariables["CLAUDE_CODE_EAGER_FLUSH"] = "1"
-        let userPluginDirs = AppDelegate.shared?.userShellEnvironment?["CLAUDE_CODE_PLUGIN_DIRS"]
-        for (key, value) in ClaudeCodeIntegration.sessionEnvironment(existingPluginDirs: userPluginDirs, sessionId: sessionId) {
-            config.environmentVariables[key] = value
-        }
-        if let userEnv = AppDelegate.shared?.userShellEnvironment {
-            for (key, value) in userEnv {
-                if config.environmentVariables[key] == nil {
-                    config.environmentVariables[key] = value
-                }
-            }
-        }
-        // Auto-close the window only on a clean (exit 0) claude exit. On an
-        // abnormal exit (crash, signal, error), keep the login shell open so
-        // the error output stays on screen — otherwise the window vanishes
-        // silently and looks like an app crash — and append a one-line record
-        // to a log so past exits are diagnosable even if unattended.
-        let closeTail =
-            "; __ct_ec=$?; if [ \"$__ct_ec\" -eq 0 ]; then exit; else "
-            + "printf '\\n[claude exited with status %s - shell kept open; type exit to close]\\n' \"$__ct_ec\"; "
-            + "echo \"$(date '+%FT%T%z') status=$__ct_ec dir=$PWD\" >>\"$HOME/Library/Logs/claude-terminal-exits.log\" 2>/dev/null; "
-            + "fi\n"
-        if let claudeOptions, claudeOptions.contains("--continue") {
-            let fallbackCmd = claudeCmd.replacingOccurrences(of: "--continue", with: "").replacingOccurrences(of: "  ", with: " ")
-            config.initialInput = "( " + claudeCmd + " || " + fallbackCmd + " )" + closeTail
-        } else {
-            config.initialInput = claudeCmd + closeTail
-        }
-
-        let surface = TerminalSurface(
-            tabId: tabId,
-            context: GHOSTTY_SURFACE_CONTEXT_WINDOW,
-            configTemplate: config
-        )
-        _terminalSurface = StateObject(wrappedValue: surface)
+        self.isActiveSession = isActiveSession
     }
 
     private var activeDocTab: DocumentTab? {
@@ -76,6 +29,9 @@ struct ContentView: View {
     }
 
     var body: some View {
+        // The terminal is in front only when this session is the window's
+        // active one and no doc tab covers it.
+        let terminalInFront = isActiveSession && activeDocTab == nil
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 if !tabState.tabs.isEmpty {
@@ -87,12 +43,12 @@ struct ContentView: View {
                     GhosttyTerminalView(
                         terminalSurface: terminalSurface,
                         paneId: UUID(),
-                        isActive: activeDocTab == nil,
-                        isVisibleInUI: activeDocTab == nil,
+                        isActive: terminalInFront,
+                        isVisibleInUI: terminalInFront,
                         searchState: terminalSurface.searchState
                     )
-                    .opacity(activeDocTab == nil ? 1 : 0)
-                    .allowsHitTesting(activeDocTab == nil)
+                    .opacity(terminalInFront ? 1 : 0)
+                    .allowsHitTesting(terminalInFront)
 
                     // Keep every open doc's viewer mounted so scroll position
                     // (and image zoom) survives switching tabs. Dispatch by
@@ -127,18 +83,18 @@ struct ContentView: View {
         }
         .onAppear {
             monitor.startMonitoring()
-            if let name = monitor.state.sessionName, !name.isEmpty {
+            if isActiveSession, let name = monitor.state.sessionName, !name.isEmpty {
                 findWindow(for: sessionId)?.title = name
             }
         }
         .onDisappear { monitor.stopMonitoring() }
         .onChange(of: monitor.state.sessionName) { name in
-            guard let name, !name.isEmpty else { return }
+            guard isActiveSession, let name, !name.isEmpty else { return }
             findWindow(for: sessionId)?.title = name
         }
     }
 
     private func findWindow(for sessionId: UUID) -> NSWindow? {
-        AppDelegate.shared?.windowForSession(sessionId)
+        AppDelegate.shared?.window(forSession: sessionId)
     }
 }

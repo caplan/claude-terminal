@@ -1,12 +1,13 @@
 import AppKit
 
 extension AppDelegate {
-    func activeSessionSnapshots() -> [(windowId: UUID, monitor: SessionMonitor)] {
-        sessionMonitors.map { ($0.key, $0.value) }
+    func activeSessionSnapshots() -> [(sessionId: UUID, monitor: SessionMonitor)] {
+        sessions.map { ($0.key, $0.value.monitor) }
     }
 
-    func focusWindow(windowId: UUID) {
-        guard let window = windows[windowId] else { return }
+    /// Brings the window that holds `sessionId` to the front.
+    func focusSession(sessionId: UUID) {
+        guard let window = window(forSession: sessionId) else { return }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
