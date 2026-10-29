@@ -135,9 +135,17 @@ final class WindowSessions: ObservableObject {
     @Published var activeSessionId: UUID?
     /// Width of the vertical tab rail, when the tab bar is on the left.
     @Published var railWidth: CGFloat
+    /// True when the user hid this window's tab bar (Toggle Tab Bar).
+    @Published var tabBarHidden = false
 
     init(windowId: UUID, railWidth: CGFloat? = nil) {
         self.windowId = windowId
         self.railWidth = railWidth ?? 220
+    }
+
+    /// The bar shows with two or more tabs; `withOneTab` is the preference
+    /// that keeps it up for a single tab.
+    func showsTabBar(withOneTab: Bool) -> Bool {
+        !tabBarHidden && (withOneTab || sessionIds.count > 1)
     }
 }

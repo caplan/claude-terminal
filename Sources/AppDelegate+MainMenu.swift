@@ -156,7 +156,7 @@ extension AppDelegate {
         // creates the SearchState, which mounts SurfaceSearchOverlay and
         // pipes keystrokes back into the Ghostty runtime via search:<needle>).
         if front.record.tabState.active != nil {
-            front.window.makeFirstResponder(front.window.contentView)
+            front.window.makeFirstResponder(sessionsHostView(of: front.window))
             front.record.tabState.triggerFind()
             return
         }
@@ -272,11 +272,20 @@ extension AppDelegate {
         sidebarStates[windowId]?.toggle()
     }
 
+    /// View > Rename Session… and the sidebar's pencil: the front session.
     @objc func renameSession(_ sender: Any? = nil) {
-        guard let keyWindow = NSApp.keyWindow else { return }
-        guard let (windowId, _) = windows.first(where: { $0.value === keyWindow }),
-              let monitor = activeSession(in: windowId)?.monitor else { return }
+        guard let front = frontSession() else { return }
+        promptRename(for: front.record, in: front.window)
+    }
 
+    /// A tab chip's context menu: that chip's session, active or not.
+    func promptRename(sessionId: UUID) {
+        guard let record = sessions[sessionId], let window = window(forSession: sessionId) else { return }
+        promptRename(for: record, in: window)
+    }
+
+    private func promptRename(for record: SessionRecord, in window: NSWindow) {
+        let monitor = record.monitor
         let alert = NSAlert()
         alert.messageText = "Rename Session"
         alert.informativeText = "Enter a new name for this session:"
@@ -292,7 +301,12 @@ extension AppDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
         monitor.renameSession(name.isEmpty ? nil : name)
-        keyWindow.title = name.isEmpty ? "Session" : name
+        // The title follows the active tab only.
+        let isActive = windowId(forSession: record.sessionId)
+            .flatMap { windowSessions[$0]?.activeSessionId } == record.sessionId
+        if isActive {
+            window.title = name.isEmpty ? "Session" : name
+        }
     }
 
 }

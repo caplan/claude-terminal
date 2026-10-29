@@ -13,7 +13,9 @@ main.swift                  → NSApplication.shared.run() + CLI argument parsin
 AppDelegate.swift           → app lifecycle, session records, URL scheme, directory picker
 AppDelegate+SessionLifecycle.swift → createWindow / addSession / activateSession / closeSession / moveSessionToNewWindow
 AppDelegate+DevCommands.swift → dev-instance command file for driving tabs without keyboard input (CONTRIBUTING.md)
-WindowRootView.swift        → window root: one ContentView per session, only the active one visible
+WindowContentView.swift     → AppKit window content: the tab bar's NSHostingView on top, the sessions' NSHostingView below
+SessionTabBar.swift         → session tab chips (favicon, name, status dot, close, context menu) and the + button
+WindowRootView.swift        → one ContentView per session in a ZStack, only the active one visible
 SessionTabs.swift           → SessionRecord (one session's monitor, doc tabs, surface, config), WindowSessions (a window's tabs), Save & Quit snapshot types
 SessionStatusStyle.swift    → status color + label shared by the menu-bar popover and the tab bar
 ContentView.swift           → one session's view: doc tab bar + terminal + doc/image tabs + sidebar
@@ -195,7 +197,7 @@ This is why `ContentView` keeps the terminal view mounted even when a markdown t
 - When adding stubs, match the exact signatures `GhosttyTerminalView.swift` expects (argument labels, return types, default values).
 - AppKit lifecycle via `main.swift`, **not** SwiftUI `@main` — the SwiftUI lifecycle doesn't reliably call `applicationDidFinishLaunching`.
 - `NSHostingView` with an explicit frame, **not** `NSHostingController` — the controller collapses to 1×32 px because `GhosttyTerminalView` has zero intrinsic size.
-- `SidebarView` must live in its own `NSHostingView` (via `SidebarHostView`), **not** as a sibling of `GhosttyTerminalView` in the same SwiftUI tree. The Metal renderer prevents SwiftUI from invalidating sibling views.
+- `SidebarView` must live in its own `NSHostingView` (via `SidebarHostView`), **not** as a sibling of `GhosttyTerminalView` in the same SwiftUI tree. The Metal renderer prevents SwiftUI from invalidating sibling views. The same holds for the session tab bar: `WindowContentView` hosts `SessionTabBar` and `WindowRootView` in two separate `NSHostingView`s and does the top/bottom split with AppKit constraints. A `VStack` with the bar above the session `ZStack` left the chip highlight stale and blanked the window when the bar went away.
 - Prefer POSIX `rename(2)` over `FileManager.moveItem` for atomic replacement — `moveItem` fails silently when the destination exists.
 - Any cross-process mutation of `status.json` must `flock(LOCK_EX)` on `.status.lock` first.
 - The custom-terminal-background KVO reapply (`AppDelegate+TerminalBackground.swift`) must stay bounded. The `backgroundColor` observer → `reapplyTerminalBackgroundIfDiverged` → `applyTerminalBackground` cycle re-runs a temp-file write + full Ghostty config parse each pass; a non-converging colorspace round-trip once dirtied multi-GB of disk and pegged CPU (build 65). `cgColorsVisuallyEqual` short-circuits the steady state and a per-window circuit breaker (`terminalBackgroundReapplyTripped`, severs the KVO observation past ~12 reapplies / 2 s) is the hard backstop — don't remove either, and keep new code paths off an unbounded reapply→write loop.

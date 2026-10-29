@@ -1,6 +1,32 @@
 # Session tabs: research and plan
 
-Status: phase 2 done on 2026-10-29 on branch `feature/session-tabs`. Decision: option B (our own tabs, one window holds many sessions). The phase 0 spike is in `git stash` on `spike/portal-two-surfaces`. Next: phase 3, the tab bar.
+Status: phase 3 done on 2026-10-29 on branch `feature/session-tabs`. Decision: option B (our own tabs, one window holds many sessions). The phase 0 spike is in `git stash` on `spike/portal-two-surfaces`. Next: phase 4, the rest of the menus and keys.
+
+## Phase 3 result (2026-10-29)
+
+Branch `feature/session-tabs`, uncommitted on top of phase 2. The horizontal tab bar is in.
+
+- New `Sources/SessionTabBar.swift`: one chip per session with favicon, name, a 6 pt status dot in `SessionStatusStyle` colors, an accent ring around the dot when a background tab has `needsInput`, and a close button (always on the active chip, on hover for the others, space kept either way). A `+` button runs `createNewTab`. The chip context menu has Rename…, Move Tab to New Window, Close Tab and Close Other Tabs. Chip style copies the doc tab bar's `TabChip`.
+- New `Sources/WindowContentView.swift`: an AppKit container that holds two `NSHostingView`s, the bar on top and `WindowRootView` below, with the bar's height constraint at 0 or 32. See the finding below for why this is AppKit and not a SwiftUI `VStack`.
+- `WindowRootView` is the session `ZStack` only.
+- `WindowSessions.tabBarHidden` and `showsTabBar(withOneTab:)`; the `showTabBarWithOneTab` preference key (default off, no UI yet).
+- `closeOtherSessions(in:keeping:)`, `promptRename(sessionId:)` for a chip's own session, and a right-click guard in `ClaudeTerminalWindow` so the bar's strip goes to the chips' context menus instead of the terminal background menu.
+- `activateSession` polls for the new tab's Metal view before it sets the first responder. A fresh tab's view appears a few run-loop turns after its ContentView mounts, and one turn was not enough.
+
+**Finding, now a hard rule.** The first version put the bar in a `VStack` above the session `ZStack`, inside one hosting view. Two things broke: the chip highlight went stale (the old tab drawn active after a switch), and when the bar disappeared on the way from two tabs to one, the window went blank, with the terminal's hosted view reporting hidden and no first responder. Both come from the known limit that CLAUDE.md records for the sidebar: SwiftUI does not reliably invalidate siblings of the Metal terminal view. Hosting the bar in its own `NSHostingView`, with the top/bottom split done by AppKit constraints, fixed both. The tree that holds the terminals must never restructure around them. CLAUDE.md and docs/ARCHITECTURE.md say so now.
+
+Checked on a dev build:
+
+| Check | Result |
+|---|---|
+| Two restored tabs | Bar shows both chips, active chip bold with fill and close button, full width above the sidebar. |
+| Click a chip | Switches tab, title and focus. |
+| Add a third tab | Third chip appended and active; highlight follows every later switch. |
+| Click the active chip's close button | Tab closed, right neighbor active, surface freed. |
+| Close down to one tab | Bar hides (height 0, hidden), the remaining terminal fills the window and keeps focus. |
+| One tab at launch, then add one, then close one | Bar appears and disappears, terminal stays visible both times. |
+
+Not checked by hand: the context menu (no right-click at the computer-use tier) and the attention ring (needs a real `needsInput`). Both are small view code.
 
 ## Phase 2 result (2026-10-29)
 

@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The window's root: one ContentView per session, stacked, with only the
+/// The stack of session views: one ContentView per session, with only the
 /// active one visible and hit-testable. Inactive sessions stay mounted so
 /// their portal bindings, doc viewers and sidebar scroll state survive a
-/// switch. The tab bar and rail are added here in a later step.
+/// switch. The tab bar is not here; WindowContentView hosts it separately so
+/// it is never a SwiftUI sibling of the Metal terminal views.
 struct WindowRootView: View {
     @ObservedObject var sessions: WindowSessions
     @ObservedObject var sidebarState: SidebarState

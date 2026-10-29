@@ -67,6 +67,11 @@ extension AppDelegate {
             resolveFrontWindow()?.1.close()
         case "status":
             break
+        case "hierarchy":
+            if let (_, window) = resolveFrontWindow(), let content = window.contentView {
+                devLog("contentView frame=\(NSStringFromRect(content.frame)) bounds=\(NSStringFromRect(content.bounds))")
+                devLogHierarchy(content, depth: 0, maxDepth: 6)
+            }
         case "save":
             saveWindowConfigs()
         case "quit":
@@ -78,6 +83,16 @@ extension AppDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.devLogStatus()
+        }
+    }
+
+    private func devLogHierarchy(_ view: NSView, depth: Int, maxDepth: Int) {
+        let indent = String(repeating: "  ", count: depth)
+        let name = String(describing: type(of: view))
+        devLog("\(indent)\(name) frame=\(NSStringFromRect(view.frame)) hidden=\(view.isHidden) alpha=\(view.alphaValue) subviews=\(view.subviews.count)")
+        guard depth < maxDepth else { return }
+        for sub in view.subviews.prefix(8) {
+            devLogHierarchy(sub, depth: depth + 1, maxDepth: maxDepth)
         }
     }
 

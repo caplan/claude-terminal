@@ -28,6 +28,14 @@ final class ClaudeTerminalWindow: NSWindow {
     private func isLocationInTerminalContent(_ locationInWindow: NSPoint, contentView: NSView) -> Bool {
         let localPoint = contentView.convert(locationInWindow, from: nil)
         guard contentView.bounds.contains(localPoint) else { return false }
+        // The session tab bar runs along the top edge. Right-clicks there
+        // belong to the chips' own context menus.
+        if let windowId, AppDelegate.shared?.tabBarIsVisible(in: windowId) == true {
+            let distanceFromTop = contentView.isFlipped
+                ? localPoint.y
+                : contentView.bounds.height - localPoint.y
+            if distanceFromTop < SessionTabBar.height { return false }
+        }
         // The sidebar lives in its own NSHostingView<SidebarView> alongside
         // the terminal. Right-clicks that land inside the sidebar should not
         // trigger the terminal-background menu.

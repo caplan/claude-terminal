@@ -25,11 +25,13 @@ extension AppDelegate {
         window.minSize = NSSize(width: 600, height: 300)
         window.contentMinSize = NSSize(width: 600, height: 300)
 
-        // NSHostingView with an explicit frame: NSHostingController collapses
-        // to 1×32 pt because GhosttyTerminalView has no intrinsic size.
-        let hostingView = NSHostingView(rootView: WindowRootView(sessions: windowTabs, sidebarState: sidebarState))
-        hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 600)
-        window.contentView = hostingView
+        // An AppKit container with two NSHostingViews (tab bar, sessions),
+        // each with an explicit frame; see WindowContentView for why.
+        window.contentView = WindowContentView(
+            sessions: windowTabs,
+            sidebarState: sidebarState,
+            frame: NSRect(x: 0, y: 0, width: 1080, height: 600)
+        )
         window.isReleasedWhenClosed = false
         window.delegate = self
 
@@ -116,20 +118,34 @@ extension AppDelegate {
         }
         window.title = record.monitor.state.sessionName
             ?? (record.config.workingDirectory as NSString).lastPathComponent
-        // The session's ContentView mounts on the next run-loop turn, so the
-        // surface view does not exist yet on a fresh tab. Focus after it.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.windowSessions[windowId]?.activeSessionId == sessionId else { return }
-            self.focusTerminal(of: record, in: window)
-        }
+        // The session's ContentView mounts on the next run-loop turn, and a
+        // fresh tab's Metal view a few turns after that. Poll briefly.
+        focusTerminalWhenReady(sessionId: sessionId, windowId: windowId, attemptsRemaining: 20)
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
+    }
+
+    private func focusTerminalWhenReady(sessionId: UUID, windowId: UUID, attemptsRemaining: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self,
+                  let window = self.windows[windowId],
+                  let record = self.sessions[sessionId],
+                  self.windowSessions[windowId]?.activeSessionId == sessionId else { return }
+            let hosted = record.surface.hostedView
+            let ready = record.tabState.active != nil
+                || (hosted.window === window && self.firstDescendant(of: hosted, ofType: GhosttyNSView.self) != nil)
+            if ready {
+                self.focusTerminal(of: record, in: window)
+            } else if attemptsRemaining > 0 {
+                self.focusTerminalWhenReady(sessionId: sessionId, windowId: windowId, attemptsRemaining: attemptsRemaining - 1)
+            }
+        }
     }
 
     /// Puts keyboard focus on a session's terminal, or on the window's content
     /// view when a doc tab covers the terminal (the doc find bar expects that).
     func focusTerminal(of record: SessionRecord, in window: NSWindow) {
         guard record.tabState.active == nil else {
-            window.makeFirstResponder(window.contentView)
+            window.makeFirstResponder(sessionsHostView(of: window))
             return
         }
         // The Metal view, not the scroll view around it: the vendored
@@ -170,6 +186,27 @@ extension AppDelegate {
     func closeSession(forTab tabId: UUID) {
         guard let sessionId = sessionIdForTab[tabId] else { return }
         closeSession(sessionId)
+    }
+
+    /// Closes every other tab of the window and leaves `sessionId` active.
+    func closeOtherSessions(in windowId: UUID, keeping sessionId: UUID) {
+        guard let ids = windowSessions[windowId]?.sessionIds, ids.contains(sessionId) else { return }
+        activateSession(sessionId)
+        for other in ids where other != sessionId {
+            closeSession(other)
+        }
+    }
+
+    /// Whether the window shows the session tab bar right now. The window's
+    /// right-click routing uses it to leave the bar's strip to the chips.
+    func tabBarIsVisible(in windowId: UUID) -> Bool {
+        (windows[windowId]?.contentView as? WindowContentView)?.isTabBarVisible ?? false
+    }
+
+    /// The hosting view that holds the session views: the first responder to
+    /// use when a doc tab, not the terminal, should take the keyboard.
+    func sessionsHostView(of window: NSWindow) -> NSView? {
+        (window.contentView as? WindowContentView)?.sessionsHost ?? window.contentView
     }
 
     /// Moves one tab into a window of its own. The TerminalSurface is the same
