@@ -60,7 +60,8 @@ extension AppDelegate {
     }
 
     /// Reopens one saved window with every session as a tab, in saved order.
-    /// Every session resumes with `--continue`.
+    /// Every session resumes with `--continue`, on the last model used in
+    /// its directory when one is saved.
     func restoreWindow(snapshot: WindowSnapshot) {
         guard !snapshot.sessions.isEmpty else { return }
         let windowId = createWindow(
@@ -73,7 +74,10 @@ extension AppDelegate {
             guard let sessionId = addSession(
                 to: windowId,
                 workingDirectory: config.workingDirectory,
-                claudeOptions: Self.continueOptions(config.claudeOptions),
+                claudeOptions: LastModel.applying(
+                    to: Self.continueOptions(config.claudeOptions),
+                    forDir: config.workingDirectory
+                ),
                 sessionName: config.sessionName,
                 storedConfig: config,
                 activate: false

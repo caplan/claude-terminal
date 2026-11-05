@@ -283,6 +283,10 @@ final class SessionMonitor: ObservableObject {
                     decoded.documents = docs.filter { FileManager.default.fileExists(atPath: $0) }
                 }
 
+                if let dir = self.workingDirectory, let modelId = decoded.modelId,
+                   modelId != self.state.modelId {
+                    LastModel.save(modelId, forDir: dir)
+                }
                 self.state = decoded
                 if decoded.needsInput == true && !wasNeeding {
                     self.sendNeedsInputNotification()
