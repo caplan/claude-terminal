@@ -37,7 +37,11 @@ extension AppDelegate {
     /// Commands: `new-tab <dir> <name> [claude options...]`, `close-tab`,
     /// `next`, `prev`, `activate <index>`, `move-new-window`, `close-window`,
     /// `save` (write the Save & Quit snapshot without quitting), `status`,
-    /// `quit`. Every command logs a status report afterwards.
+    /// `quit`, and for the tab bar and drags: `tabs-left`, `tabs-top`,
+    /// `toggle-tab-bar`, `rail-width <n>`, `frame <x> <y> <w> <h>`,
+    /// `focus <window>`, `reorder <index>`,
+    /// `move-to <window> [index]`, `merge-into <window> [index]` and
+    /// `probe <x> <y>` (a window is a prefix of its id in the status report). Every command logs a status report afterwards.
     func runDevCommand(_ line: String) {
         let parts = line.split(separator: " ").map(String.init)
         guard let verb = parts.first else { return }
@@ -67,6 +71,47 @@ extension AppDelegate {
             resolveFrontWindow()?.1.close()
         case "status":
             break
+        case "frame":
+            // frame <x> <y> <w> <h>: move and size the front window.
+            let values = parts.dropFirst().compactMap(Double.init)
+            guard values.count == 4, let (_, window) = resolveFrontWindow() else { return }
+            window.setFrame(NSRect(x: values[0], y: values[1], width: values[2], height: values[3]), display: true)
+        case "focus":
+            // focus <window id prefix>: bring that window to the front.
+            guard parts.count == 2, let id = devWindow(prefix: parts[1]) else { return }
+            windows[id]?.makeKeyAndOrderFront(nil)
+        case "tabs-left":
+            setTabsOnLeft()
+        case "tabs-top":
+            setTabsOnTop()
+        case "toggle-tab-bar":
+            toggleTabBar()
+        case "rail-width":
+            guard parts.count == 2, let width = Double(parts[1]),
+                  let (windowId, _) = resolveFrontWindow() else { return }
+            windowSessions[windowId]?.railWidth = CGFloat(width)
+        case "reorder":
+            guard parts.count == 2, let index = Int(parts[1]), let front = frontSession() else { return }
+            reorderSession(front.record.sessionId, to: index)
+        case "move-to":
+            // move-to <window id prefix> [index]: the front tab joins that window.
+            guard parts.count >= 2, let front = frontSession(),
+                  let target = devWindow(prefix: parts[1]) else { return }
+            moveSession(front.record.sessionId, toWindow: target, at: parts.count > 2 ? Int(parts[2]) : nil)
+        case "merge-into":
+            // merge-into <window id prefix> [index]: the front window's tabs join that window.
+            guard parts.count >= 2, let (source, _) = resolveFrontWindow(),
+                  let target = devWindow(prefix: parts[1]) else { return }
+            mergeWindow(source, into: target, at: parts.count > 2 ? Int(parts[2]) : nil)
+        case "probe":
+            // probe <x> <y>: what a tab drop and a title-bar drop of the front
+            // window would do at that screen point. y counts from the bottom.
+            guard parts.count == 3, let x = Double(parts[1]), let y = Double(parts[2]),
+                  let front = frontSession() else { return }
+            let point = NSPoint(x: x, y: y)
+            devLog("tab drop: \(TabDragController.shared.describeDrop(of: front.record.sessionId, at: point))")
+            devLog("window drop: \(WindowDragTracker.shared.describeTarget(of: front.windowId, at: point))")
+            return
         case "hierarchy":
             if let (_, window) = resolveFrontWindow(), let content = window.contentView {
                 devLog("contentView frame=\(NSStringFromRect(content.frame)) bounds=\(NSStringFromRect(content.bounds))")
@@ -96,12 +141,21 @@ extension AppDelegate {
         }
     }
 
+    private func devWindow(prefix: String) -> UUID? {
+        windows.keys.first { $0.uuidString.lowercased().hasPrefix(prefix.lowercased()) }
+    }
+
     func devLogStatus() {
         for (windowId, window) in windows {
             let windowTabs = windowSessions[windowId]
             let responder = window.firstResponder
             let responderName = responder.map { String(describing: type(of: $0)) } ?? "nil"
             devLog("window \(windowId.uuidString.prefix(8)) title='\(window.title)' key=\(window.isKeyWindow) frame=\(NSStringFromRect(window.frame)) tabs=\(windowTabs?.sessionIds.count ?? 0) firstResponder=\(responderName)")
+            if let bar = tabBarScreenRect(of: windowId) {
+                devLog("  bar=\(NSStringFromRect(bar)) vertical=\(windowContent(of: windowId)?.isVertical ?? false) titleBar=\(NSStringFromRect(titleBarScreenRect(of: window))) chips=\(windowTabs?.sessionIds.compactMap { windowTabs?.chipFrames[$0].map(NSStringFromRect) } ?? [])")
+            } else {
+                devLog("  bar=hidden titleBar=\(NSStringFromRect(titleBarScreenRect(of: window)))")
+            }
             for (index, sessionId) in (windowTabs?.sessionIds ?? []).enumerated() {
                 guard let record = sessions[sessionId] else {
                     devLog("  [\(index)] \(sessionId) has no record")

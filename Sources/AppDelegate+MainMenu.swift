@@ -67,6 +67,11 @@ extension AppDelegate {
     private func makeViewSubmenu() -> NSMenu {
         let menu = NSMenu(title: "View")
         menu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
+        menu.addItem(withTitle: "Toggle Tab Bar", action: #selector(toggleTabBar), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Tabs on Top", action: #selector(setTabsOnTop), keyEquivalent: "")
+        menu.addItem(withTitle: "Tabs on Left", action: #selector(setTabsOnLeft), keyEquivalent: "")
+        menu.addItem(withTitle: "Show Tab Bar with One Tab", action: #selector(toggleTabBarWithOneTab), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Actual Size", action: #selector(docZoomReset), keyEquivalent: "0")
         menu.addItem(withTitle: "Zoom In", action: #selector(docZoomIn), keyEquivalent: "+")
@@ -266,6 +271,37 @@ extension AppDelegate {
         return ok
     }
 
+    /// View > Toggle Tab Bar, for the key window. Hiding wins over every
+    /// other rule; showing a one-tab window's bar pins it up for that window.
+    @objc func toggleTabBar() {
+        guard let (windowId, _) = resolveFrontWindow(),
+              let windowTabs = windowSessions[windowId] else { return }
+        if tabBarVisible(in: windowId) {
+            windowTabs.tabBarHidden = true
+            windowTabs.tabBarPinned = false
+        } else {
+            windowTabs.tabBarHidden = false
+            windowTabs.tabBarPinned = true
+        }
+    }
+
+    @objc func setTabsOnTop() {
+        UserDefaults.standard.set(TabBarPosition.top.rawValue, forKey: TabBarPosition.defaultsKey)
+    }
+
+    @objc func setTabsOnLeft() {
+        UserDefaults.standard.set(TabBarPosition.left.rawValue, forKey: TabBarPosition.defaultsKey)
+    }
+
+    @objc func toggleTabBarWithOneTab() {
+        let key = "showTabBarWithOneTab"
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
+    }
+
+    func tabBarVisible(in windowId: UUID) -> Bool {
+        windowContent(of: windowId)?.isTabBarVisible ?? false
+    }
+
     @objc func toggleSidebar() {
         guard let keyWindow = NSApp.keyWindow else { return }
         guard let (windowId, _) = windows.first(where: { $0.value === keyWindow }) else { return }
@@ -309,4 +345,25 @@ extension AppDelegate {
         }
     }
 
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// Checkmarks for the tab bar items. Every other item stays enabled, as
+    /// it was before this validation existed.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(setTabsOnTop):
+            menuItem.state = TabBarPosition.current == .top ? .on : .off
+        case #selector(setTabsOnLeft):
+            menuItem.state = TabBarPosition.current == .left ? .on : .off
+        case #selector(toggleTabBarWithOneTab):
+            menuItem.state = UserDefaults.standard.bool(forKey: "showTabBarWithOneTab") ? .on : .off
+        case #selector(toggleTabBar):
+            guard let (windowId, _) = resolveFrontWindow() else { return false }
+            menuItem.title = tabBarVisible(in: windowId) ? "Hide Tab Bar" : "Show Tab Bar"
+        default:
+            break
+        }
+        return true
+    }
 }

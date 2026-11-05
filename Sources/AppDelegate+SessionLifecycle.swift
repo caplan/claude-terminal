@@ -197,46 +197,134 @@ extension AppDelegate {
         }
     }
 
-    /// Whether the window shows the session tab bar right now. The window's
-    /// right-click routing uses it to leave the bar's strip to the chips.
-    func tabBarIsVisible(in windowId: UUID) -> Bool {
-        (windows[windowId]?.contentView as? WindowContentView)?.isTabBarVisible ?? false
-    }
-
     /// The hosting view that holds the session views: the first responder to
     /// use when a doc tab, not the terminal, should take the keyboard.
     func sessionsHostView(of window: NSWindow) -> NSView? {
         (window.contentView as? WindowContentView)?.sessionsHost ?? window.contentView
     }
 
-    /// Moves one tab into a window of its own. The TerminalSurface is the same
-    /// object; the portal re-binds it when the new window's ContentView mounts.
-    func moveSessionToNewWindow(_ sessionId: UUID) {
+    // MARK: - Moving tabs between windows
+
+    /// Takes a session out of its window's tab list. When it was the active
+    /// tab and others remain, the neighbor takes its place. Returns the window
+    /// it came from, which is empty when this was its only tab; the caller
+    /// closes that window once the session sits in its new one.
+    private func detachSession(_ sessionId: UUID) -> UUID? {
+        guard let windowId = windowId(forSession: sessionId),
+              let windowTabs = windowSessions[windowId],
+              let index = windowTabs.sessionIds.firstIndex(of: sessionId) else { return nil }
+        windowTabs.sessionIds.remove(at: index)
+        if windowTabs.activeSessionId == sessionId {
+            if windowTabs.sessionIds.isEmpty {
+                windowTabs.activeSessionId = nil
+            } else {
+                activateSession(windowTabs.sessionIds[min(index, windowTabs.sessionIds.count - 1)])
+            }
+        }
+        return windowId
+    }
+
+    /// Puts a detached session into a window's tab list at `index` (the end
+    /// when nil) and brings it to the front. The TerminalSurface is the same
+    /// object; the portal re-binds it when the window's ContentView mounts.
+    private func attachSession(_ sessionId: UUID, to windowId: UUID, at index: Int?) {
+        guard let window = windows[windowId],
+              let windowTabs = windowSessions[windowId],
+              let record = sessions[sessionId] else { return }
+        tabManagers[record.tabId] = TabManager(window: window, tabId: record.tabId)
+        let position = min(max(index ?? windowTabs.sessionIds.count, 0), windowTabs.sessionIds.count)
+        windowTabs.sessionIds.insert(sessionId, at: position)
+        activateSession(sessionId)
+    }
+
+    /// Closes a window that a move left without tabs. It leaves the screen at
+    /// once; the close waits a moment so the moved sessions' views mount in
+    /// their new window before this one's view tree goes away.
+    private func closeEmptiedWindow(_ windowId: UUID) {
+        guard windowSessions[windowId]?.sessionIds.isEmpty == true,
+              let window = windows[windowId] else { return }
+        window.orderOut(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard self?.windowSessions[windowId]?.sessionIds.isEmpty == true else { return }
+            window.close()
+        }
+    }
+
+    /// Moves a tab to another window's tab bar, at `index` (the end when nil).
+    /// Moving a window's only tab closes that window.
+    func moveSession(_ sessionId: UUID, toWindow targetId: UUID, at index: Int?) {
+        guard let sourceId = windowId(forSession: sessionId), sourceId != targetId,
+              windows[targetId] != nil,
+              detachSession(sessionId) != nil else { return }
+        attachSession(sessionId, to: targetId, at: index)
+        windows[targetId]?.makeKeyAndOrderFront(nil)
+        closeEmptiedWindow(sourceId)
+        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
+    }
+
+    /// Moves a tab within its own window's bar. `index` counts positions in
+    /// the bar as it is now, before the tab leaves its old place.
+    func reorderSession(_ sessionId: UUID, to index: Int) {
+        guard let windowId = windowId(forSession: sessionId),
+              let windowTabs = windowSessions[windowId],
+              let from = windowTabs.sessionIds.firstIndex(of: sessionId) else { return }
+        var ids = windowTabs.sessionIds
+        ids.remove(at: from)
+        let to = min(max(from < index ? index - 1 : index, 0), ids.count)
+        ids.insert(sessionId, at: to)
+        guard ids != windowTabs.sessionIds else { return }
+        windowTabs.sessionIds = ids
+        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
+    }
+
+    /// Moves one tab into a window of its own. With `screenPoint` (where a
+    /// tab drag ended), the new window's top-left corner goes there.
+    func moveSessionToNewWindow(_ sessionId: UUID, at screenPoint: NSPoint? = nil) {
         guard let oldWindowId = windowId(forSession: sessionId),
               let oldTabs = windowSessions[oldWindowId],
               oldTabs.sessionIds.count > 1,
               let oldWindow = windows[oldWindowId],
               let oldSidebar = sidebarStates[oldWindowId],
-              let record = sessions[sessionId],
-              let index = oldTabs.sessionIds.firstIndex(of: sessionId) else { return }
-
-        oldTabs.sessionIds.remove(at: index)
-        if oldTabs.activeSessionId == sessionId {
-            activateSession(oldTabs.sessionIds[min(index, oldTabs.sessionIds.count - 1)])
-        }
+              let record = sessions[sessionId] else { return }
 
         let newWindowId = createWindow(sidebarVisible: oldSidebar.isVisible, sidebarWidth: oldSidebar.width, railWidth: oldTabs.railWidth)
-        guard let newWindow = windows[newWindowId], let newTabs = windowSessions[newWindowId] else { return }
-        tabManagers[record.tabId] = TabManager(window: newWindow, tabId: record.tabId)
+        guard let newWindow = windows[newWindowId] else { return }
+        _ = detachSession(sessionId)
         let name = record.monitor.state.sessionName
             ?? (record.config.workingDirectory as NSString).lastPathComponent
         newWindow.setFrameAutosaveName("claude-terminal-\(name)")
-        if !newWindow.setFrameUsingName(newWindow.frameAutosaveName) {
+        if let screenPoint {
+            var frame = oldWindow.frame
+            frame.origin = NSPoint(x: screenPoint.x - 60, y: screenPoint.y - frame.height + 12)
+            newWindow.setFrame(frame, display: false)
+        } else if !newWindow.setFrameUsingName(newWindow.frameAutosaveName) {
             newWindow.setFrame(oldWindow.frame.offsetBy(dx: 40, dy: -40), display: false)
         }
-        newTabs.sessionIds = [sessionId]
-        activateSession(sessionId)
+        attachSession(sessionId, to: newWindowId, at: nil)
         newWindow.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
+    }
+
+    /// Moves every tab of one window into another, in order, starting at
+    /// `index` (the end when nil). The source's active tab ends up active,
+    /// and the emptied source window closes.
+    func mergeWindow(_ sourceId: UUID, into targetId: UUID, at index: Int?) {
+        guard sourceId != targetId,
+              let sourceTabs = windowSessions[sourceId],
+              windowSessions[targetId] != nil else { return }
+        let ids = sourceTabs.sessionIds
+        let wasActive = sourceTabs.activeSessionId
+        guard !ids.isEmpty else { return }
+        // Empty the source in one step, so no neighbor activates in between.
+        sourceTabs.sessionIds = []
+        sourceTabs.activeSessionId = nil
+        let start = index ?? windowSessions[targetId]?.sessionIds.count ?? 0
+        for (offset, sessionId) in ids.enumerated() {
+            attachSession(sessionId, to: targetId, at: start + offset)
+        }
+        if let wasActive { activateSession(wasActive) }
+        windows[targetId]?.makeKeyAndOrderFront(nil)
+        closeEmptiedWindow(sourceId)
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
     }
 }

@@ -134,18 +134,60 @@ final class WindowSessions: ObservableObject {
     @Published var sessionIds: [UUID] = []
     @Published var activeSessionId: UUID?
     /// Width of the vertical tab rail, when the tab bar is on the left.
-    @Published var railWidth: CGFloat
+    @Published var railWidth: CGFloat {
+        didSet {
+            let clamped = min(max(railWidth, Self.railWidthRange.lowerBound), Self.railWidthRange.upperBound)
+            if clamped != railWidth { railWidth = clamped }
+        }
+    }
     /// True when the user hid this window's tab bar (Toggle Tab Bar).
     @Published var tabBarHidden = false
+    /// True when the user showed this window's tab bar with Toggle Tab Bar
+    /// while it had one tab. It keeps the bar up for that window.
+    @Published var tabBarPinned = false
+    /// True when the bar is the rail down the left side. Set from the
+    /// `TabBarPosition` setting by WindowContentView; the bar draws from it.
+    @Published var barIsVertical = false
+    /// Where a dragged tab would land in this window's bar, while a drag is
+    /// over it. The bar draws an insertion marker there.
+    @Published var dropIndex: Int?
+    /// Each chip's frame in the bar's coordinate space (top-left origin), as
+    /// the bar last laid them out. A drag reads it to find the drop index.
+    var chipFrames: [UUID: CGRect] = [:]
+
+    static let railWidthRange: ClosedRange<CGFloat> = 140...420
 
     init(windowId: UUID, railWidth: CGFloat? = nil) {
         self.windowId = windowId
-        self.railWidth = railWidth ?? 220
+        let width = railWidth ?? 220
+        self.railWidth = min(max(width, Self.railWidthRange.lowerBound), Self.railWidthRange.upperBound)
     }
 
     /// The bar shows with two or more tabs; `withOneTab` is the preference
     /// that keeps it up for a single tab.
     func showsTabBar(withOneTab: Bool) -> Bool {
-        !tabBarHidden && (withOneTab || sessionIds.count > 1)
+        !tabBarHidden && (withOneTab || tabBarPinned || sessionIds.count > 1)
+    }
+
+    /// The index a tab dropped at `point` (bar coordinates) goes to: the
+    /// number of chips whose center comes before the point.
+    func insertionIndex(at point: CGPoint, vertical: Bool) -> Int {
+        sessionIds.filter { id in
+            guard let frame = chipFrames[id] else { return false }
+            return vertical ? frame.midY < point.y : frame.midX < point.x
+        }.count
+    }
+}
+
+/// Where the session tab bar sits in every window: along the top, or as a
+/// rail down the left side. An app-wide setting, like the one-tab setting.
+enum TabBarPosition: String {
+    case top
+    case left
+
+    static let defaultsKey = "tabBarPosition"
+
+    static var current: TabBarPosition {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(TabBarPosition.init) ?? .top
     }
 }

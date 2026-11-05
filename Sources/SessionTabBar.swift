@@ -5,40 +5,37 @@ import SwiftUI
 /// its own type, because the two chips will drift apart.
 struct SessionTabBar: View {
     static let height: CGFloat = 32
+    /// The named coordinate space chip frames are measured in. It is the
+    /// bar's own top-left origin, which is the hosting view's origin too.
+    static let space = "sessionTabBar"
 
     @ObservedObject var sessions: WindowSessions
 
+    /// True for the rail down the left side, false for the bar on top.
+    private var vertical: Bool { sessions.barIsVertical }
+
     var body: some View {
+        Group {
+            if vertical {
+                rail
+            } else {
+                bar
+            }
+        }
+        .coordinateSpace(name: Self.space)
+        .onPreferenceChange(ChipFramesKey.self) { sessions.chipFrames = $0 }
+        .overlay(alignment: .topLeading) { insertionMarker }
+    }
+
+    private var bar: some View {
         HStack(spacing: 4) {
-            ForEach(sessions.sessionIds, id: \.self) { sessionId in
-                if let record = AppDelegate.shared?.sessions[sessionId] {
-                    SessionTabChip(
-                        monitor: record.monitor,
-                        isActive: sessionId == sessions.activeSessionId,
-                        hasSiblings: sessions.sessionIds.count > 1,
-                        onSelect: { AppDelegate.shared?.activateSession(sessionId) },
-                        onClose: { AppDelegate.shared?.closeSession(sessionId) },
-                        onCloseOthers: { AppDelegate.shared?.closeOtherSessions(in: sessions.windowId, keeping: sessionId) },
-                        onRename: { AppDelegate.shared?.promptRename(sessionId: sessionId) },
-                        onMoveToNewWindow: { AppDelegate.shared?.moveSessionToNewWindow(sessionId) }
-                    )
-                }
-            }
-            Button {
-                AppDelegate.shared?.createNewTab()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("New Tab (⌘T)")
+            chips
+            newTabButton
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
         .frame(height: Self.height)
+        .frame(maxWidth: .infinity)
         .background(VisualEffectBackground(material: .titlebar))
         .overlay(
             Rectangle()
@@ -47,12 +44,119 @@ struct SessionTabBar: View {
             alignment: .bottom
         )
     }
+
+    private var rail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 2) {
+                chips
+                newTabButton
+                    .padding(.leading, 4)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(VisualEffectBackground(material: .sidebar))
+        .overlay(
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1),
+            alignment: .trailing
+        )
+    }
+
+    private var chips: some View {
+        ForEach(sessions.sessionIds, id: \.self) { sessionId in
+            if let record = AppDelegate.shared?.sessions[sessionId] {
+                SessionTabChip(
+                    monitor: record.monitor,
+                    isActive: sessionId == sessions.activeSessionId,
+                    hasSiblings: sessions.sessionIds.count > 1,
+                    vertical: vertical,
+                    onSelect: { AppDelegate.shared?.activateSession(sessionId) },
+                    onClose: { AppDelegate.shared?.closeSession(sessionId) },
+                    onCloseOthers: { AppDelegate.shared?.closeOtherSessions(in: sessions.windowId, keeping: sessionId) },
+                    onRename: { AppDelegate.shared?.promptRename(sessionId: sessionId) },
+                    onMoveToNewWindow: { AppDelegate.shared?.moveSessionToNewWindow(sessionId) }
+                )
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ChipFramesKey.self,
+                            value: [sessionId: proxy.frame(in: .named(Self.space))]
+                        )
+                    }
+                )
+                // A drag that leaves the bar keeps its updates: AppKit sends
+                // every mouse-dragged event to the window the press began in.
+                .gesture(
+                    DragGesture(minimumDistance: 5)
+                        .onChanged { _ in TabDragController.shared.update(sessionId: sessionId) }
+                        .onEnded { _ in TabDragController.shared.end() }
+                )
+            }
+        }
+    }
+
+    private var newTabButton: some View {
+        Button {
+            AppDelegate.shared?.createNewTab()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                if vertical {
+                    Text("New Tab")
+                        .font(.system(size: 11))
+                }
+            }
+            .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("New Tab (⌘T)")
+    }
+
+    /// A short accent line between chips, where a dragged tab would land.
+    @ViewBuilder
+    private var insertionMarker: some View {
+        if let index = sessions.dropIndex, let rect = markerRect(at: index) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color.accentColor)
+                .frame(width: rect.width, height: rect.height)
+                .offset(x: rect.minX, y: rect.minY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func markerRect(at index: Int) -> CGRect? {
+        let frames = sessions.sessionIds.compactMap { sessions.chipFrames[$0] }
+        guard !frames.isEmpty else { return nil }
+        if vertical {
+            let y = index < frames.count ? frames[index].minY - 1 : frames[frames.count - 1].maxY + 1
+            let x = frames[0].minX
+            return CGRect(x: x, y: y - 1, width: frames[0].width, height: 2)
+        }
+        let x = index < frames.count ? frames[index].minX - 2 : frames[frames.count - 1].maxX + 2
+        let y = frames[0].minY
+        return CGRect(x: x - 1, y: y, width: 2, height: frames[0].height)
+    }
+}
+
+/// Each chip's frame in the bar's named coordinate space, keyed by session.
+private struct ChipFramesKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
 }
 
 private struct SessionTabChip: View {
     @ObservedObject var monitor: SessionMonitor
     let isActive: Bool
     let hasSiblings: Bool
+    let vertical: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
     let onCloseOthers: () -> Void
@@ -81,6 +185,7 @@ private struct SessionTabChip: View {
                 .foregroundColor(isActive ? .primary : Color(nsColor: .secondaryLabelColor))
                 .lineLimit(1)
                 .truncationMode(.middle)
+            if vertical { Spacer(minLength: 0) }
             statusDot
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -99,8 +204,8 @@ private struct SessionTabChip: View {
             .help("Close Tab (⌘W)")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .frame(maxWidth: 220)
+        .padding(.vertical, vertical ? 6 : 4)
+        .frame(maxWidth: vertical ? .infinity : 220, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActive ? Color(nsColor: .controlBackgroundColor) : Color.clear)
