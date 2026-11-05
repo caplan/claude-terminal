@@ -111,6 +111,9 @@ struct SessionState: Codable, Equatable {
     var sessionName: String?
     var sessionNameOverride: Bool?
     var modelName: String?
+    /// The model id Claude Code reports, such as `claude-opus-5-5[1m]`.
+    /// Saved per directory so a resumed session starts on the same model.
+    var modelId: String?
     var workingDirectory: String?
     var status: SessionStatus
     var cost: CostInfo?
@@ -135,7 +138,7 @@ struct SessionState: Codable, Equatable {
     var apiSendMs: Int?
 
     enum CodingKeys: String, CodingKey {
-        case sessionName, sessionNameOverride, modelName, workingDirectory
+        case sessionName, sessionNameOverride, modelName, modelId, workingDirectory
         case status, cost, claudeCodeSessionId
         case currentToolName, toolDetail
         case subagents, tasks, network, documents, activeTools, conversationTurns, needsInput

@@ -92,6 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !opts.contains("--continue") {
                     opts = opts.isEmpty ? "--continue" : "--continue \(opts)"
                 }
+                // Resume on the last model used in this directory.
+                opts = LastModel.applying(to: opts, forDir: config.workingDirectory)
                 restoreWindow(config: config, claudeOptions: opts)
             }
         } else if !launchedViaURL {
@@ -388,7 +390,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionName = url.lastPathComponent
         }
         var extra: [String] = ["--name \"\(sessionName)\""]
-        if newSessionCheck.state == .off { extra.append("--continue") }
+        if newSessionCheck.state == .off {
+            extra.append("--continue")
+            if let modelOpt = LastModel.option(forDir: dir) { extra.append(modelOpt) }
+        }
         if dangerCheck.state == .on { extra.append("--dangerously-skip-permissions") }
         return (dir, sessionName, extra.joined(separator: " "))
     }

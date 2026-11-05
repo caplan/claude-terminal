@@ -259,7 +259,10 @@ func runHook() {
 func handleSessionStart(_ state: inout [String: Any], event: [String: Any]) {
     let source = (event["source"] as? String) ?? ""
     state["status"] = "idle"
-    if let model = event["model"] { state["modelName"] = model }
+    if let model = event["model"] {
+        state["modelName"] = model
+        if let id = model as? String, !id.isEmpty { state["modelId"] = id }
+    }
     state["currentToolName"] = NSNull()
     state["toolDetail"] = NSNull()
     state["activeTools"] = []
@@ -668,6 +671,7 @@ func runStatusLine() {
         if !display.isEmpty || !mid.isEmpty {
             state["modelName"] = display.isEmpty ? mid : display
         }
+        if !mid.isEmpty { state["modelId"] = mid }
     }
 
     // Session name (don't overwrite user renames)
