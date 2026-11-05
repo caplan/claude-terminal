@@ -39,8 +39,14 @@ extension AppDelegate {
     private func makeFileSubmenu() -> NSMenu {
         let menu = NSMenu(title: "File")
         menu.addItem(withTitle: "New Session", action: #selector(newWindowFromMenu), keyEquivalent: "n")
+        menu.addItem(withTitle: "New Tab", action: #selector(newTabFromMenu), keyEquivalent: "t")
         menu.addItem(withTitle: "Open Session...", action: #selector(newWindowFromMenu), keyEquivalent: "o")
-        menu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        menu.addItem(.separator())
+        // Cmd+W closes the active tab; on the last tab that closes the window.
+        // Cmd+Shift+W always closes the window. An uppercase key equivalent
+        // means Shift in AppKit.
+        menu.addItem(withTitle: "Close Tab", action: #selector(closeTabFromMenu), keyEquivalent: "w")
+        menu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W")
         return menu
     }
 
@@ -61,6 +67,11 @@ extension AppDelegate {
     private func makeViewSubmenu() -> NSMenu {
         let menu = NSMenu(title: "View")
         menu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
+        menu.addItem(withTitle: "Toggle Tab Bar", action: #selector(toggleTabBar), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Tabs on Top", action: #selector(setTabsOnTop), keyEquivalent: "")
+        menu.addItem(withTitle: "Tabs on Left", action: #selector(setTabsOnLeft), keyEquivalent: "")
+        menu.addItem(withTitle: "Show Tab Bar with One Tab", action: #selector(toggleTabBarWithOneTab), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Actual Size", action: #selector(docZoomReset), keyEquivalent: "0")
         menu.addItem(withTitle: "Zoom In", action: #selector(docZoomIn), keyEquivalent: "+")
@@ -75,6 +86,14 @@ extension AppDelegate {
 
     private func makeWindowSubmenu() -> NSMenu {
         let menu = NSMenu(title: "Window")
+        // Tab navigation. Each item claims a key that Ghostty also binds, so
+        // the vendored key path hands it to the menu instead of the engine.
+        let next = menu.addItem(withTitle: "Show Next Tab", action: #selector(showNextTab), keyEquivalent: "]")
+        next.keyEquivalentModifierMask = [.command, .shift]
+        let previous = menu.addItem(withTitle: "Show Previous Tab", action: #selector(showPreviousTab), keyEquivalent: "[")
+        previous.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(withTitle: "Move Tab to New Window", action: #selector(moveTabToNewWindowFromMenu), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.delegate = self
         windowMenu = menu
         return menu
@@ -84,6 +103,39 @@ extension AppDelegate {
 
     @objc func newWindowFromMenu() {
         createNewWindow()
+    }
+
+    @objc func newTabFromMenu() {
+        createNewTab()
+    }
+
+    @objc func closeTabFromMenu() {
+        guard let front = frontSession() else { return }
+        closeSession(front.record.sessionId)
+    }
+
+    @objc func showNextTab() {
+        stepTab(by: 1)
+    }
+
+    @objc func showPreviousTab() {
+        stepTab(by: -1)
+    }
+
+    @objc func moveTabToNewWindowFromMenu() {
+        guard let front = frontSession() else { return }
+        moveSessionToNewWindow(front.record.sessionId)
+    }
+
+    /// Moves the active tab of the front window by `delta`, wrapping around.
+    private func stepTab(by delta: Int) {
+        guard let (windowId, _) = resolveFrontWindow(),
+              let windowTabs = windowSessions[windowId],
+              windowTabs.sessionIds.count > 1,
+              let active = windowTabs.activeSessionId,
+              let index = windowTabs.sessionIds.firstIndex(of: active) else { return }
+        let count = windowTabs.sessionIds.count
+        activateSession(windowTabs.sessionIds[((index + delta) % count + count) % count])
     }
 
     @objc func openPreferences() {
@@ -103,19 +155,17 @@ extension AppDelegate {
     }
 
     @objc func findInDoc() {
-        guard let (windowId, window) = resolveFrontWindow() else { return }
+        guard let front = frontSession() else { return }
         // If a markdown doc is visible, route Cmd+F to the doc find bar.
         // Otherwise drive the Ghostty terminal's native search (start_search
         // creates the SearchState, which mounts SurfaceSearchOverlay and
         // pipes keystrokes back into the Ghostty runtime via search:<needle>).
-        if let tabState = documentTabStates[windowId], tabState.active != nil {
-            window.makeFirstResponder(window.contentView)
-            tabState.triggerFind()
+        if front.record.tabState.active != nil {
+            front.window.makeFirstResponder(sessionsHostView(of: front.window))
+            front.record.tabState.triggerFind()
             return
         }
-        let frontSurface = TerminalSurfaceRegistry.shared.allSurfaces()
-            .first { $0.hostedView.window === window }
-        _ = frontSurface?.performBindingAction("start_search")
+        _ = front.record.surface.performBindingAction("start_search")
     }
 
     @objc func findNextInDoc() {
@@ -127,8 +177,7 @@ extension AppDelegate {
     }
 
     func frontTabState() -> DocumentTabState? {
-        guard let (windowId, _) = resolveFrontWindow() else { return nil }
-        return documentTabStates[windowId]
+        frontSession()?.record.tabState
     }
 
     @objc func showAboutPanel() {
@@ -222,17 +271,57 @@ extension AppDelegate {
         return ok
     }
 
+    /// View > Toggle Tab Bar, for the key window. Hiding wins over every
+    /// other rule; showing a one-tab window's bar pins it up for that window.
+    @objc func toggleTabBar() {
+        guard let (windowId, _) = resolveFrontWindow(),
+              let windowTabs = windowSessions[windowId] else { return }
+        if tabBarVisible(in: windowId) {
+            windowTabs.tabBarHidden = true
+            windowTabs.tabBarPinned = false
+        } else {
+            windowTabs.tabBarHidden = false
+            windowTabs.tabBarPinned = true
+        }
+    }
+
+    @objc func setTabsOnTop() {
+        UserDefaults.standard.set(TabBarPosition.top.rawValue, forKey: TabBarPosition.defaultsKey)
+    }
+
+    @objc func setTabsOnLeft() {
+        UserDefaults.standard.set(TabBarPosition.left.rawValue, forKey: TabBarPosition.defaultsKey)
+    }
+
+    @objc func toggleTabBarWithOneTab() {
+        let key = "showTabBarWithOneTab"
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
+    }
+
+    func tabBarVisible(in windowId: UUID) -> Bool {
+        windowContent(of: windowId)?.isTabBarVisible ?? false
+    }
+
     @objc func toggleSidebar() {
         guard let keyWindow = NSApp.keyWindow else { return }
         guard let (windowId, _) = windows.first(where: { $0.value === keyWindow }) else { return }
         sidebarStates[windowId]?.toggle()
     }
 
+    /// View > Rename Session… and the sidebar's pencil: the front session.
     @objc func renameSession(_ sender: Any? = nil) {
-        guard let keyWindow = NSApp.keyWindow else { return }
-        guard let (windowId, _) = windows.first(where: { $0.value === keyWindow }),
-              let monitor = sessionMonitors[windowId] else { return }
+        guard let front = frontSession() else { return }
+        promptRename(for: front.record, in: front.window)
+    }
 
+    /// A tab chip's context menu: that chip's session, active or not.
+    func promptRename(sessionId: UUID) {
+        guard let record = sessions[sessionId], let window = window(forSession: sessionId) else { return }
+        promptRename(for: record, in: window)
+    }
+
+    private func promptRename(for record: SessionRecord, in window: NSWindow) {
+        let monitor = record.monitor
         let alert = NSAlert()
         alert.messageText = "Rename Session"
         alert.informativeText = "Enter a new name for this session:"
@@ -248,13 +337,33 @@ extension AppDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
         monitor.renameSession(name.isEmpty ? nil : name)
-        keyWindow.title = name.isEmpty ? "Session" : name
+        // The title follows the active tab only.
+        let isActive = windowId(forSession: record.sessionId)
+            .flatMap { windowSessions[$0]?.activeSessionId } == record.sessionId
+        if isActive {
+            window.title = name.isEmpty ? "Session" : name
+        }
     }
 
-    func windowForSession(_ sessionId: UUID) -> NSWindow? {
-        for (windowId, monitor) in sessionMonitors {
-            if monitor.sessionId == sessionId { return windows[windowId] }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// Checkmarks for the tab bar items. Every other item stays enabled, as
+    /// it was before this validation existed.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(setTabsOnTop):
+            menuItem.state = TabBarPosition.current == .top ? .on : .off
+        case #selector(setTabsOnLeft):
+            menuItem.state = TabBarPosition.current == .left ? .on : .off
+        case #selector(toggleTabBarWithOneTab):
+            menuItem.state = UserDefaults.standard.bool(forKey: "showTabBarWithOneTab") ? .on : .off
+        case #selector(toggleTabBar):
+            guard let (windowId, _) = resolveFrontWindow() else { return false }
+            menuItem.title = tabBarVisible(in: windowId) ? "Hide Tab Bar" : "Show Tab Bar"
+        default:
+            break
         }
-        return nil
+        return true
     }
 }

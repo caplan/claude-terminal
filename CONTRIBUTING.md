@@ -36,6 +36,22 @@ Regenerate the Xcode project after editing `project.yml`:
 xcodegen generate
 ```
 
+### Running a dev build next to the release app
+
+`open -n` on a Debug build only works when no release build is running: the app holds a single-instance lock in `~/.claude-terminal/instance.lock`, and a second launch forwards to the running instance and exits. Two instances under the same bundle id would also collide in the WindowServer. To run a dev build while the release app keeps your sessions open, give it its own bundle id and tell it to skip the lock:
+
+```bash
+xcodebuild -project claude-terminal.xcodeproj -scheme claude-terminal -configuration Debug \
+  -derivedDataPath /tmp/ct-dev PRODUCT_BUNDLE_IDENTIFIER=org.claire.claude-terminal.dev build
+open --env CLAUDE_TERMINAL_DEV_INSTANCE=1 -n /tmp/ct-dev/Build/Products/Debug/claude-terminal.app
+```
+
+`CLAUDE_TERMINAL_DEV_INSTANCE=1` skips the lock and the CLI symlink installer, so the dev build cannot repoint `~/.local/bin/claude-terminal` at itself. With `CLAUDE_TERMINAL_DEV_CMD=<file>` and `CLAUDE_TERMINAL_DEV_LOG=<file>` set as well, the dev build polls the command file twice a second, runs each line (`new-tab <dir> <name> [claude options...]`, `close-tab`, `next`, `prev`, `activate <index>`, `move-new-window`, `close-window`, `save`, `status`, `quit`, and for the tab bar and moves `tabs-left`, `tabs-top`, `toggle-tab-bar`, `rail-width <n>`, `frame <x> <y> <w> <h>`, `focus <window>`, `reorder <index>`, `move-to <window> [index]`, `merge-into <window> [index]`, `probe <x> <y>`; a window is a prefix of its id in the status report, and `probe` logs what a tab drop and a title-bar drop would do at that screen point), deletes the file, and appends a status report (windows, tabs, first responder, surface counts) to the log. This is how tab behavior gets checked when no keyboard input can reach the app. Use `open`, not the binary path: a process started from a sandboxed shell gets no WindowServer connection and shows no window. A sandboxed shell can also block `open` itself: it returns 0, and the app starts, reads and clears `savedWindows`, and dies before the poller starts. Run `open` outside the sandbox, and write `savedWindows` again before each launch. A real mouse drag cannot be sent from the command file; `probe` checks the drop targets, and `move-to` and `merge-into` run the same moves a drop does. The dev build has its own defaults domain (`defaults delete org.claire.claude-terminal.dev` resets it) and registers with LaunchServices on first launch; unregister it when done so it does not claim the `claude-terminal://` scheme:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u /tmp/ct-dev/Build/Products/Debug/claude-terminal.app
+```
+
 ### The sidebar-bridge mod
 
 `Resources/sidebar-bridge-mod/` is the Claude Code mod that feeds the sidebar. Check it after each change, and again when Claude Code updates:

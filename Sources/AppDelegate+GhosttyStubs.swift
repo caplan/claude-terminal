@@ -9,8 +9,15 @@ import AppKit
 extension AppDelegate {
     func isCommandPaletteEffectivelyVisible(for window: NSWindow?) -> Bool { false }
 
+    /// The manager of the session in front of `window`. A window with tabs
+    /// holds several; the vendored code wants the one that has focus.
     func tabManagerFor(window: NSWindow?) -> TabManager? {
         guard let window else { return nil }
+        if let windowId = windows.first(where: { $0.value === window })?.key,
+           let tabId = activeSession(in: windowId)?.tabId,
+           let manager = tabManagers[tabId] {
+            return manager
+        }
         return tabManagers.values.first { $0.window === window }
     }
     func tabManagerFor(tabId: UUID) -> TabManager? { tabManagers[tabId] }

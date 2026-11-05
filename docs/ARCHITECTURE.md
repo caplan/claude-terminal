@@ -2,7 +2,7 @@
 
 ## Overview
 
-claude-terminal is a multi-window macOS AppKit application that embeds Ghostty's terminal engine via `GhosttyKit.xcframework`. Each window runs one Claude Code session with a live SwiftUI sidebar. A Claude Code mod, loaded into each session, feeds the sidebar through a small compiled helper binary.
+claude-terminal is a multi-window macOS AppKit application that embeds Ghostty's terminal engine via `GhosttyKit.xcframework`. Each window holds one or more Claude Code sessions as tabs, each with its own terminal surface and live SwiftUI sidebar; only the active tab is visible. A Claude Code mod, loaded into each session, feeds the sidebar through a small compiled helper binary.
 
 Bundle ID: `org.claire.claude-terminal`.
 
@@ -10,8 +10,16 @@ Bundle ID: `org.claire.claude-terminal`.
 
 ```
 main.swift                  → NSApplication.shared.run() + CLI argument parsing
-AppDelegate.swift           → window management, menus, session monitors, URL scheme
-ContentView.swift           → SwiftUI root: tab bar + terminal + doc/image tabs + sidebar
+AppDelegate.swift           → app lifecycle, session records, URL scheme, directory picker
+AppDelegate+SessionLifecycle.swift → createWindow / addSession / activateSession / closeSession / moveSession / reorderSession / moveSessionToNewWindow / mergeWindow
+AppDelegate+DevCommands.swift → dev-instance command file for driving tabs without keyboard input (CONTRIBUTING.md)
+WindowContentView.swift     → AppKit window content: the tab bar's NSHostingView (on top, or a resizable rail on the left) and the sessions' NSHostingView
+TabDragging.swift           → tab chip drags (reorder, move to another window, split out) and title-bar drags that merge one window into another
+SessionTabBar.swift         → session tab chips (favicon, name, status dot, close, context menu, drag), the + button and the drop marker, in a row or a rail
+WindowRootView.swift        → one ContentView per session in a ZStack, only the active one visible
+SessionTabs.swift           → SessionRecord (one session's monitor, doc tabs, surface, config), WindowSessions (a window's tabs), Save & Quit snapshot types
+SessionStatusStyle.swift    → status color + label shared by the menu-bar popover and the tab bar
+ContentView.swift           → one session's view: doc tab bar + terminal + doc/image tabs + sidebar
 SidebarView.swift           → live session sidebar (status, activity chart, docs, context, cost, tasks, subagents, github status)
 SidebarHostView.swift       → NSViewRepresentable that gives the sidebar its own NSHostingView
 SidebarState.swift          → sidebar visibility + resizable width
@@ -19,12 +27,12 @@ SessionMonitor.swift        → watches ~/.claude-terminal/sessions/<id>/status.
 SessionState.swift          → Codable model for session state
 TranscriptTailer.swift      → tails ~/.claude/projects/<sanitized>/<cc-session>.jsonl to surface assistant prose + background-task notifications
 GitHubStatusMonitor.swift   → singleton that polls githubstatus.com every 30s with a 500ms timeout + GitRepoDetector
-DocumentTabState.swift      → per-window doc-tab model (open/close/find/zoom, md + image)
+DocumentTabState.swift      → per-session doc-tab model (open/close/find/zoom, md + image)
 DocumentExcerptCache.swift  → caches first-heading / first-line for sidebar markdown cards
 MarkdownViewerView.swift    → WKWebView wrapper for the inline markdown tab
 ImageViewerView.swift       → NSScrollView + NSImageView tab for viewing images; auto-reloads on write
 DocFindBar.swift            → in-tab Cmd+F find overlay
-TerminalTabBar.swift        → compact per-window tab bar
+TerminalTabBar.swift        → compact per-session doc tab bar
 MenuBarController.swift     → NSStatusItem + NSPanel for the menu-bar session grid
 MenuBarPopoverView.swift    → SwiftUI grid of session cards for the menu-bar popup
 SessionListViewModel.swift  → aggregates active + past sessions (live updates)
@@ -148,6 +156,15 @@ A small template-rendered GitHub octocat SVG (`Resources/Assets.xcassets/github.
 
 `cost.total_cost_usd` in the statusline payload (from `$.session.usage().cost.usd`) is **cumulative for the entire CLI lifetime** — it spans `--continue` resumes *and* `/clear`. We pass it through as-is on every poll except after `/clear`: when the SessionStart hook fires with `source: "clear"`, it stamps `_pendingCostReset` on `state`. The next `runStatusLine` consumes that flag, snapshots the current cumulative report into `_costBaseline`, and subsequent polls compute `displayed = reported - baseline` per-field. The baseline lives in `state` (status.json), so it persists across reopen; the persist file at `~/.claude-terminal/cost-by-session.json` therefore stores the post-baseline value, which is exactly what the sidebar wants to seed on reopen. Subtraction only — never sum a saved value on top of Claude Code's number; that path doubled cost on save+quit+relaunch (commit 0403696). See `Hook/main.swift:runStatusLine` and `handleSessionStart`.
 
+## Tab drag and drop
+
+`TabDragging.swift` runs two drags in screen coordinates (`NSEvent.mouseLocation`), with no pasteboard:
+
+- **Tab chip drag.** A `DragGesture` on each chip feeds `TabDragController`. AppKit sends every mouse-dragged event to the window the press began in, so the gesture keeps reporting after the pointer leaves the window. A drop on the chip's own bar reorders; anywhere over another window moves the tab there (at the marker when over its bar, at the end otherwise); over the desktop it gets a window of its own, placed at the drop point. A floating panel shows the chip under the pointer, and an accent panel outlines the target.
+- **Window drag.** `windowWillMove` starts `WindowDragTracker`. AppKit sends no event when a title-bar drag ends, so a timer in the common run-loop modes reads the pointer and the mouse button until the button goes up. A drop on another window's title bar or tab bar moves every tab of the dragged window into it (`mergeWindow`). Only those strips count, so windows can still overlap.
+
+Each bar records its chips' frames (`WindowSessions.chipFrames`) for the drop index, and draws the marker from `WindowSessions.dropIndex`. A move keeps the same `TerminalSurface`; the portal re-binds it when the target window's `ContentView` mounts. A window that a move leaves without tabs orders out at once and closes 0.2 s later, after the moved views have mounted.
+
 ## Portal system (critical)
 
 `GhosttyTerminalView` is an `NSViewRepresentable` that returns an **empty** `HostContainerView` placeholder. The actual terminal view (`GhosttySurfaceScrollView`) is added later by `TerminalWindowPortalRegistry.bind()`, which calls `host.addSubview(hostedView)` with autolayout constraints. If `bind()` is a no-op, the window renders black.
@@ -190,7 +207,7 @@ This is why `ContentView` keeps the terminal view mounted even when a markdown t
 - When adding stubs, match the exact signatures `GhosttyTerminalView.swift` expects (argument labels, return types, default values).
 - AppKit lifecycle via `main.swift`, **not** SwiftUI `@main` — the SwiftUI lifecycle doesn't reliably call `applicationDidFinishLaunching`.
 - `NSHostingView` with an explicit frame, **not** `NSHostingController` — the controller collapses to 1×32 px because `GhosttyTerminalView` has zero intrinsic size.
-- `SidebarView` must live in its own `NSHostingView` (via `SidebarHostView`), **not** as a sibling of `GhosttyTerminalView` in the same SwiftUI tree. The Metal renderer prevents SwiftUI from invalidating sibling views.
+- `SidebarView` must live in its own `NSHostingView` (via `SidebarHostView`), **not** as a sibling of `GhosttyTerminalView` in the same SwiftUI tree. The Metal renderer prevents SwiftUI from invalidating sibling views. The same holds for the session tab bar: `WindowContentView` hosts `SessionTabBar` and `WindowRootView` in two separate `NSHostingView`s and does the top/bottom split with AppKit constraints. A `VStack` with the bar above the session `ZStack` left the chip highlight stale and blanked the window when the bar went away. Two more rules for that container: `tabBarHost.sizingOptions` stays empty, because SwiftUI's default sizing turned the rail's content height into a maximum height and shrank the whole window to it; and `updateLayout` never calls `layoutSubtreeIfNeeded`, because those updates can land while SwiftUI updates a hosting view, and a forced layout then aborts in AttributeGraph (`AG::Graph::value_set` precondition). It sets `needsLayout` instead.
 - Prefer POSIX `rename(2)` over `FileManager.moveItem` for atomic replacement — `moveItem` fails silently when the destination exists.
 - Any cross-process mutation of `status.json` must `flock(LOCK_EX)` on `.status.lock` first.
 - The custom-terminal-background KVO reapply (`AppDelegate+TerminalBackground.swift`) must stay bounded. The `backgroundColor` observer → `reapplyTerminalBackgroundIfDiverged` → `applyTerminalBackground` cycle re-runs a temp-file write + full Ghostty config parse each pass; a non-converging colorspace round-trip once dirtied multi-GB of disk and pegged CPU (build 65). `cgColorsVisuallyEqual` short-circuits the steady state and a per-window circuit breaker (`terminalBackgroundReapplyTripped`, severs the KVO observation past ~12 reapplies / 2 s) is the hard backstop — don't remove either, and keep new code paths off an unbounded reapply→write loop.

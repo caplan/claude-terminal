@@ -18,7 +18,7 @@ extension AppDelegate: NSMenuDelegate {
             item.representedObject = windowId
             item.tag = Self.windowListTag
             item.state = (window === NSApp.keyWindow) ? .on : .off
-            if let monitor = sessionMonitors[windowId] {
+            if let monitor = activeSession(in: windowId)?.monitor {
                 item.image = FaviconLoader.favicon(for: monitor.state.workingDirectory)
             }
             menu.addItem(item)

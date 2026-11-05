@@ -3,26 +3,28 @@ import AppKit
 extension AppDelegate {
     // MARK: - Public entry points
 
-    /// Builds the right-click menu shown over the window chrome.
+    /// Builds the right-click menu shown over the window chrome. Acts on the
+    /// session in front of that window.
     func terminalBackgroundContextMenu(for windowId: UUID) -> NSMenu {
         let menu = NSMenu()
+        guard let sessionId = activeSession(in: windowId)?.sessionId else { return menu }
         let setItem = NSMenuItem(
             title: "Set Terminal Background Color…",
             action: #selector(handleChooseTerminalBackground(_:)),
             keyEquivalent: ""
         )
         setItem.target = self
-        setItem.representedObject = windowId
+        setItem.representedObject = sessionId
         menu.addItem(setItem)
 
-        if customTerminalBackgrounds[windowId] != nil {
+        if customTerminalBackgrounds[sessionId] != nil {
             let removeItem = NSMenuItem(
                 title: "Remove Custom Background",
                 action: #selector(handleRemoveTerminalBackground(_:)),
                 keyEquivalent: ""
             )
             removeItem.target = self
-            removeItem.representedObject = windowId
+            removeItem.representedObject = sessionId
             menu.addItem(removeItem)
         }
         return menu
@@ -31,58 +33,58 @@ extension AppDelegate {
     // MARK: - Menu actions
 
     @objc func handleChooseTerminalBackground(_ sender: Any?) {
-        guard let windowId = resolveWindowId(from: sender) else { return }
-        colorPanelWindowId = windowId
+        guard let sessionId = resolveSessionId(from: sender) else { return }
+        colorPanelSessionId = sessionId
 
         let panel = NSColorPanel.shared
         panel.showsAlpha = false
         panel.setTarget(self)
         panel.setAction(#selector(colorPanelDidChange(_:)))
-        if let existing = customTerminalBackgrounds[windowId] {
+        if let existing = customTerminalBackgrounds[sessionId] {
             panel.color = existing
         }
         panel.makeKeyAndOrderFront(nil)
     }
 
     @objc func handleRemoveTerminalBackground(_ sender: Any?) {
-        guard let windowId = resolveWindowId(from: sender) else { return }
-        if let dir = terminalBackgroundDir(for: windowId) {
+        guard let sessionId = resolveSessionId(from: sender) else { return }
+        if let dir = terminalBackgroundDir(for: sessionId) {
             Self.setSavedTerminalBackground(hex: nil, forDir: dir)
         }
-        customTerminalBackgrounds.removeValue(forKey: windowId)
-        terminalBackgroundObservations.removeValue(forKey: windowId)?.invalidate()
-        resetTerminalBackgroundReapplyBreaker(windowId: windowId)
-        if colorPanelWindowId == windowId {
-            colorPanelWindowId = nil
+        customTerminalBackgrounds.removeValue(forKey: sessionId)
+        terminalBackgroundObservations.removeValue(forKey: sessionId)?.invalidate()
+        resetTerminalBackgroundReapplyBreaker(sessionId: sessionId)
+        if colorPanelSessionId == sessionId {
+            colorPanelSessionId = nil
         }
-        resetTerminalBackground(windowId: windowId)
+        resetTerminalBackground(sessionId: sessionId)
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
     }
 
     @objc func colorPanelDidChange(_ sender: Any?) {
         guard let panel = sender as? NSColorPanel,
-              let windowId = colorPanelWindowId else { return }
+              let sessionId = colorPanelSessionId else { return }
         let color = panel.color.usingColorSpace(.sRGB) ?? panel.color
-        customTerminalBackgrounds[windowId] = color
-        if let dir = terminalBackgroundDir(for: windowId) {
+        customTerminalBackgrounds[sessionId] = color
+        if let dir = terminalBackgroundDir(for: sessionId) {
             Self.setSavedTerminalBackground(hex: color.hexString(), forDir: dir)
         }
-        resetTerminalBackgroundReapplyBreaker(windowId: windowId)
-        applyTerminalBackground(windowId: windowId)
+        resetTerminalBackgroundReapplyBreaker(sessionId: sessionId)
+        applyTerminalBackground(sessionId: sessionId)
     }
 
-    /// Main-menu entry points (View menu). Routes to the front window.
+    /// Main-menu entry points (View menu). Routes to the front session.
     @objc func chooseTerminalBackgroundFromMenu() {
-        guard let (windowId, _) = resolveFrontWindow() else { return }
+        guard let front = frontSession() else { return }
         let wrapped = NSMenuItem()
-        wrapped.representedObject = windowId
+        wrapped.representedObject = front.record.sessionId
         handleChooseTerminalBackground(wrapped)
     }
 
     @objc func resetTerminalBackgroundFromMenu() {
-        guard let (windowId, _) = resolveFrontWindow() else { return }
+        guard let front = frontSession() else { return }
         let wrapped = NSMenuItem()
-        wrapped.representedObject = windowId
+        wrapped.representedObject = front.record.sessionId
         handleRemoveTerminalBackground(wrapped)
     }
 
@@ -106,9 +108,9 @@ extension AppDelegate {
         UserDefaults.standard.set(map, forKey: terminalBgByDirKey)
     }
 
-    /// Working directory backing a window, used to key the persisted color.
-    func terminalBackgroundDir(for windowId: UUID) -> String? {
-        windowConfigs[windowId]?.workingDirectory
+    /// Working directory of a session, used to key the persisted color.
+    func terminalBackgroundDir(for sessionId: UUID) -> String? {
+        sessions[sessionId]?.config.workingDirectory
     }
 
     // MARK: - Persistence / reapply
@@ -116,34 +118,34 @@ extension AppDelegate {
     /// Called on `.ghosttyConfigDidReload`, which is the one code path that
     /// wipes the per-surface override. Reapply ours.
     @objc func reapplyAllTerminalBackgrounds() {
-        for windowId in customTerminalBackgrounds.keys {
-            applyTerminalBackground(windowId: windowId)
+        for sessionId in customTerminalBackgrounds.keys {
+            applyTerminalBackground(sessionId: sessionId)
         }
     }
 
     /// On launch the Metal surface isn't mounted synchronously — `installWindow`
     /// returns before `GhosttyNSView` shows up in the view tree. Poll briefly
     /// and apply the restored color once the surface exists.
-    func scheduleRestoredBackgroundApply(windowId: UUID, attemptsRemaining: Int) {
+    func scheduleRestoredBackgroundApply(sessionId: UUID, attemptsRemaining: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self,
-                  self.customTerminalBackgrounds[windowId] != nil,
-                  let window = self.windows[windowId]
+                  self.customTerminalBackgrounds[sessionId] != nil,
+                  self.sessions[sessionId] != nil
             else { return }
-            if self.findGhosttySurfaceView(in: window) != nil {
-                self.applyTerminalBackground(windowId: windowId)
+            if self.findGhosttySurfaceView(forSession: sessionId) != nil {
+                self.applyTerminalBackground(sessionId: sessionId)
             } else if attemptsRemaining > 0 {
-                self.scheduleRestoredBackgroundApply(windowId: windowId, attemptsRemaining: attemptsRemaining - 1)
+                self.scheduleRestoredBackgroundApply(sessionId: sessionId, attemptsRemaining: attemptsRemaining - 1)
             }
         }
     }
 
     // MARK: - Surface plumbing
 
-    private func applyTerminalBackground(windowId: UUID) {
-        guard let color = customTerminalBackgrounds[windowId],
-              let window = windows[windowId],
-              let surfaceView = findGhosttySurfaceView(in: window)
+    private func applyTerminalBackground(sessionId: UUID) {
+        guard let color = customTerminalBackgrounds[sessionId],
+              let window = window(forSession: sessionId),
+              let surfaceView = findGhosttySurfaceView(forSession: sessionId)
         else { return }
 
         // The host-layer paint alone isn't enough: Ghostty's renderer still
@@ -159,7 +161,7 @@ extension AppDelegate {
         // (alpha + color-space normalization), which the observer reads as
         // "diverged" and loops on ghostty_surface_update_config's internal
         // lock until the process hangs.
-        terminalBackgroundApplyInProgress.insert(windowId)
+        terminalBackgroundApplyInProgress.insert(sessionId)
         NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
 
         surfaceView.backgroundColor = color
@@ -181,11 +183,11 @@ extension AppDelegate {
             DispatchQueue.main.async { [weak self] in
                 window.backgroundColor = savedBg
                 window.isOpaque = savedOpaque
-                self?.terminalBackgroundApplyInProgress.remove(windowId)
+                self?.terminalBackgroundApplyInProgress.remove(sessionId)
             }
         }
 
-        installBackgroundObserver(windowId: windowId, in: window)
+        installBackgroundObserver(sessionId: sessionId)
     }
 
     private func buildBackgroundConfigOverride(color: NSColor) -> ghostty_config_t? {
@@ -220,22 +222,21 @@ extension AppDelegate {
     /// exactly what Claude Code's `/clear` emits. Observe the
     /// `backgroundView.layer.backgroundColor` (where the color actually
     /// lands) and re-apply our override when it drifts.
-    private func installBackgroundObserver(windowId: UUID, in window: NSWindow) {
-        guard let hosted = TerminalSurfaceRegistry.shared.allSurfaces()
-            .first(where: { $0.hostedView.window === window })?.hostedView,
+    private func installBackgroundObserver(sessionId: UUID) {
+        guard let hosted = sessions[sessionId]?.surface.hostedView,
               let bgView = hosted.subviews.first,
               let layer = bgView.layer
         else { return }
 
         // Ensure we don't stack observers.
-        if terminalBackgroundObservations[windowId] != nil { return }
+        if terminalBackgroundObservations[sessionId] != nil { return }
 
         let observation = layer.observe(\.backgroundColor, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async {
-                self?.reapplyTerminalBackgroundIfDiverged(windowId: windowId)
+                self?.reapplyTerminalBackgroundIfDiverged(sessionId: sessionId)
             }
         }
-        terminalBackgroundObservations[windowId] = observation
+        terminalBackgroundObservations[sessionId] = observation
     }
 
     // Circuit-breaker tuning. No legitimate event (e.g. `/clear` emitting
@@ -244,15 +245,13 @@ extension AppDelegate {
     private static let terminalBgReapplyWindow: TimeInterval = 2.0
     private static let terminalBgReapplyMax = 12
 
-    private func reapplyTerminalBackgroundIfDiverged(windowId: UUID) {
-        guard !terminalBackgroundApplyInProgress.contains(windowId) else { return }
-        // Breaker already tripped for this window: auto-reapply is disabled
+    private func reapplyTerminalBackgroundIfDiverged(sessionId: UUID) {
+        guard !terminalBackgroundApplyInProgress.contains(sessionId) else { return }
+        // Breaker already tripped for this session: auto-reapply is disabled
         // until the user explicitly sets/removes a color.
-        guard !terminalBackgroundReapplyTripped.contains(windowId) else { return }
-        guard let color = customTerminalBackgrounds[windowId],
-              let window = windows[windowId],
-              let hosted = TerminalSurfaceRegistry.shared.allSurfaces()
-                .first(where: { $0.hostedView.window === window })?.hostedView,
+        guard !terminalBackgroundReapplyTripped.contains(sessionId) else { return }
+        guard let color = customTerminalBackgrounds[sessionId],
+              let hosted = sessions[sessionId]?.surface.hostedView,
               let bgView = hosted.subviews.first,
               let current = bgView.layer?.backgroundColor
         else { return }
@@ -264,27 +263,27 @@ extension AppDelegate {
         // so the cycle's source stops firing; the user's chosen color is
         // kept, only the self-healing reapply is disabled.
         let now = Date()
-        var stamps = terminalBackgroundReapplyTimestamps[windowId, default: []]
+        var stamps = terminalBackgroundReapplyTimestamps[sessionId, default: []]
         stamps.append(now)
         stamps.removeAll { now.timeIntervalSince($0) > Self.terminalBgReapplyWindow }
-        terminalBackgroundReapplyTimestamps[windowId] = stamps
+        terminalBackgroundReapplyTimestamps[sessionId] = stamps
         if stamps.count > Self.terminalBgReapplyMax {
-            terminalBackgroundReapplyTripped.insert(windowId)
-            terminalBackgroundReapplyTimestamps[windowId] = nil
-            terminalBackgroundObservations.removeValue(forKey: windowId)?.invalidate()
-            NSLog("[TerminalBackground] reapply circuit breaker tripped for window \(windowId) — \(stamps.count) reapplies in \(Self.terminalBgReapplyWindow)s; disabling auto-reapply to prevent runaway CPU/disk writes")
+            terminalBackgroundReapplyTripped.insert(sessionId)
+            terminalBackgroundReapplyTimestamps[sessionId] = nil
+            terminalBackgroundObservations.removeValue(forKey: sessionId)?.invalidate()
+            NSLog("[TerminalBackground] reapply circuit breaker tripped for session \(sessionId) — \(stamps.count) reapplies in \(Self.terminalBgReapplyWindow)s; disabling auto-reapply to prevent runaway CPU/disk writes")
             return
         }
 
-        applyTerminalBackground(windowId: windowId)
+        applyTerminalBackground(sessionId: sessionId)
     }
 
-    /// Re-arm the breaker for a window — called when the user explicitly
+    /// Re-arm the breaker for a session — called when the user explicitly
     /// sets or removes a custom background, which is an unambiguous signal
     /// that this is intentional and the loop guard should reset.
-    private func resetTerminalBackgroundReapplyBreaker(windowId: UUID) {
-        terminalBackgroundReapplyTripped.remove(windowId)
-        terminalBackgroundReapplyTimestamps[windowId] = nil
+    private func resetTerminalBackgroundReapplyBreaker(sessionId: UUID) {
+        terminalBackgroundReapplyTripped.remove(sessionId)
+        terminalBackgroundReapplyTimestamps[sessionId] = nil
     }
 
     /// CGColor's `==` is `CGColorEqualToColor`, which requires bit-identical
@@ -305,9 +304,9 @@ extension AppDelegate {
         return true
     }
 
-    private func resetTerminalBackground(windowId: UUID) {
-        guard let window = windows[windowId],
-              let surfaceView = findGhosttySurfaceView(in: window)
+    private func resetTerminalBackground(sessionId: UUID) {
+        guard let window = window(forSession: sessionId),
+              let surfaceView = findGhosttySurfaceView(forSession: sessionId)
         else { return }
 
         let savedBg = window.backgroundColor
@@ -334,23 +333,15 @@ extension AppDelegate {
         }
     }
 
-    private func findGhosttySurfaceView(in window: NSWindow) -> GhosttyNSView? {
-        if let surface = TerminalSurfaceRegistry.shared.allSurfaces()
-            .first(where: { $0.hostedView.window === window })
-        {
-            if let found = firstDescendant(of: surface.hostedView, ofType: GhosttyNSView.self) {
-                return found
-            }
-        }
-        if let root = window.contentView,
-           let found = firstDescendant(of: root, ofType: GhosttyNSView.self)
-        {
-            return found
-        }
-        return nil
+    /// The Metal view of one session's surface. Looked up through the
+    /// session's own hosted view, never "the surface in this window", because
+    /// a window with tabs holds several.
+    private func findGhosttySurfaceView(forSession sessionId: UUID) -> GhosttyNSView? {
+        guard let hosted = sessions[sessionId]?.surface.hostedView else { return nil }
+        return firstDescendant(of: hosted, ofType: GhosttyNSView.self)
     }
 
-    private func firstDescendant<T: NSView>(of view: NSView, ofType type: T.Type) -> T? {
+    func firstDescendant<T: NSView>(of view: NSView, ofType type: T.Type) -> T? {
         for sub in view.subviews {
             if let match = sub as? T { return match }
             if let nested = firstDescendant(of: sub, ofType: type) { return nested }
@@ -358,10 +349,10 @@ extension AppDelegate {
         return nil
     }
 
-    private func resolveWindowId(from sender: Any?) -> UUID? {
+    private func resolveSessionId(from sender: Any?) -> UUID? {
         if let item = sender as? NSMenuItem, let id = item.representedObject as? UUID {
             return id
         }
-        return resolveFrontWindow()?.0
+        return frontSession()?.record.sessionId
     }
 }

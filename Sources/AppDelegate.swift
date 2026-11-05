@@ -7,6 +7,9 @@ struct OpenDocState: Codable, Equatable {
     var scrollY: Double
 }
 
+/// Save & Quit format version 1: one session per window. Kept only so an
+/// older `savedWindows` payload still restores; see `WindowSnapshot` for the
+/// current format.
 struct WindowConfig: Codable {
     var workingDirectory: String
     var claudeOptions: String?
@@ -21,12 +24,12 @@ struct WindowConfig: Codable {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
 
+    // Window-level state, keyed by windowId.
     var windows: [UUID: NSWindow] = [:]
-    var tabManagers: [UUID: TabManager] = [:]
+    var windowSessions: [UUID: WindowSessions] = [:]
     var sidebarStates: [UUID: SidebarState] = [:]
-    var sessionMonitors: [UUID: SessionMonitor] = [:]
-    var documentTabStates: [UUID: DocumentTabState] = [:]
-    var windowConfigs: [UUID: WindowConfig] = [:]
+    // Session-level state, keyed by sessionId. A window holds one or more.
+    var sessions: [UUID: SessionRecord] = [:]
     var customTerminalBackgrounds: [UUID: NSColor] = [:]
     var terminalBackgroundObservations: [UUID: NSKeyValueObservation] = [:]
     var terminalBackgroundApplyInProgress: Set<UUID> = []
@@ -37,7 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // runaway seen on build 65. Cleared when the user sets/removes a color.
     var terminalBackgroundReapplyTimestamps: [UUID: [Date]] = [:]
     var terminalBackgroundReapplyTripped: Set<UUID> = []
-    var colorPanelWindowId: UUID?
+    var colorPanelSessionId: UUID?
+    // Ghostty's per-surface manager, keyed by tabId (the surface id), plus
+    // the map back to the session that owns the surface.
+    var tabManagers: [UUID: TabManager] = [:]
+    var sessionIdForTab: [UUID: UUID] = [:]
     var windowMenu: NSMenu?
     var launchedViaURL = false
     var cliArguments: CLIArguments?
@@ -77,7 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(renameSession), name: .renameSession, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reapplyAllTerminalBackgrounds), name: .ghosttyConfigDidReload, object: nil)
         NSApp.activate(ignoringOtherApps: true)
-        installCLISymlinkIfNeeded()
+        // A development build must not repoint ~/.local/bin/claude-terminal
+        // at itself.
+        if ProcessInfo.processInfo.environment["CLAUDE_TERMINAL_DEV_INSTANCE"] != "1" {
+            installCLISymlinkIfNeeded()
+        }
         suggestJiraCLIIfNeeded()
         if let cli = cliArguments {
             let dir = cli.workingDirectory ?? FileManager.default.currentDirectoryPath
@@ -87,18 +98,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             opts = opts.map { $0 + " " + extra } ?? extra
             openWindowDirectly(workingDirectory: dir, claudeOptions: opts, sessionName: name)
         } else if !launchedViaURL, let saved = restoreSavedWindows(), !saved.isEmpty {
-            for config in saved {
-                var opts = config.claudeOptions ?? ""
-                if !opts.contains("--continue") {
-                    opts = opts.isEmpty ? "--continue" : "--continue \(opts)"
-                }
-                // Resume on the last model used in this directory.
-                opts = LastModel.applying(to: opts, forDir: config.workingDirectory)
-                restoreWindow(config: config, claudeOptions: opts)
+            for snapshot in saved {
+                restoreWindow(snapshot: snapshot)
             }
         } else if !launchedViaURL {
             createNewWindow()
         }
+        startDevCommandPollerIfEnabled()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -121,23 +127,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if let (windowId, window) = resolveFrontWindow(),
-           let tabState = documentTabStates[windowId] {
-            tabState.open(path: path)
-            sessionMonitors[windowId]?.addDocument(path: path)
-            window.makeKeyAndOrderFront(nil)
+        if let front = frontSession() {
+            front.record.tabState.open(path: path)
+            front.record.monitor.addDocument(path: path)
+            front.window.makeKeyAndOrderFront(nil)
             return
         }
 
         let parent = (path as NSString).deletingLastPathComponent
         openWindowDirectly(workingDirectory: parent, claudeOptions: nil, sessionName: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            guard let (windowId, _) = self.resolveFrontWindow(),
-                  let tabState = self.documentTabStates[windowId] else { return }
-            tabState.open(path: path)
-            self.sessionMonitors[windowId]?.addDocument(path: path)
+            guard let front = self?.frontSession() else { return }
+            front.record.tabState.open(path: path)
+            front.record.monitor.addDocument(path: path)
         }
+    }
+
+    // MARK: - Session lookup
+
+    func windowId(forSession sessionId: UUID) -> UUID? {
+        windowSessions.first(where: { $0.value.sessionIds.contains(sessionId) })?.key
+    }
+
+    func window(forSession sessionId: UUID) -> NSWindow? {
+        windowId(forSession: sessionId).flatMap { windows[$0] }
+    }
+
+    func activeSession(in windowId: UUID) -> SessionRecord? {
+        guard let id = windowSessions[windowId]?.activeSessionId else { return nil }
+        return sessions[id]
+    }
+
+    /// The session in front of the key window: the target of every menu
+    /// command that acts on a session rather than a window.
+    func frontSession() -> (windowId: UUID, window: NSWindow, record: SessionRecord)? {
+        guard let (windowId, window) = resolveFrontWindow(),
+              let record = activeSession(in: windowId) else { return nil }
+        return (windowId, window, record)
+    }
+
+    func session(forTab tabId: UUID) -> SessionRecord? {
+        sessionIdForTab[tabId].flatMap { sessions[$0] }
     }
 
     func resolveFrontWindow() -> (UUID, NSWindow)? {
@@ -158,9 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !windows.isEmpty else { return .terminateNow }
 
+        let count = sessions.count
         let alert = NSAlert()
         alert.messageText = "Save open windows?"
-        alert.informativeText = "Reopen \(windows.count) session\(windows.count == 1 ? "" : "s") on next launch."
+        alert.informativeText = "Reopen \(count) session\(count == 1 ? "" : "s") on next launch."
         alert.addButton(withTitle: "Save & Quit")
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
@@ -214,91 +245,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Shared window builder. Creates NSWindow + ContentView + all per-window
-    /// state objects, registers everything in the parallel dictionaries, and
-    /// returns the DocumentTabState so restore paths can reopen tabs.
-    @discardableResult
-    func installWindow(
+    /// Builds the per-session objects: monitor, doc tabs, terminal surface
+    /// and the saved config. Nothing here touches a window.
+    func makeSessionRecord(
         workingDirectory dir: String,
         claudeOptions opts: String?,
-        sessionName: String?,
-        sidebarVisible: Bool,
-        sidebarWidth: CGFloat? = nil,
-        storedConfig: WindowConfig? = nil
-    ) -> (windowId: UUID, tabState: DocumentTabState) {
-        let windowId = UUID()
-        let tabId = UUID()
+        sessionName resolvedName: String,
+        storedConfig: SessionConfig?
+    ) -> SessionRecord {
         let sessionId = UUID()
-        let sidebarState = SidebarState(defaultVisible: sidebarVisible, width: sidebarWidth)
-        let resolvedName = sessionName ?? (dir as NSString).lastPathComponent
+        let tabId = UUID()
         let monitor = SessionMonitor(sessionId: sessionId, initialName: resolvedName, workingDirectory: dir)
-        let tabState = DocumentTabState()
-
-        let contentView = ContentView(
-            tabId: tabId,
-            sessionId: sessionId,
-            sidebarState: sidebarState,
-            monitor: monitor,
-            tabState: tabState,
-            workingDirectory: dir,
-            claudeOptions: opts
-        )
-
-        let window = ClaudeTerminalWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.windowId = windowId
-        window.title = monitor.state.sessionName ?? resolvedName
-        window.minSize = NSSize(width: 600, height: 300)
-        window.contentMinSize = NSSize(width: 600, height: 300)
-
-        let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 600)
-        window.contentView = hostingView
-
-        window.setFrameAutosaveName("claude-terminal-\(resolvedName)")
-        if !window.setFrameUsingName(window.frameAutosaveName) {
-            window.center()
-        }
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-
-        windows[windowId] = window
-        tabManagers[tabId] = TabManager(window: window, tabId: tabId)
-        sidebarStates[windowId] = sidebarState
-        sessionMonitors[windowId] = monitor
-        documentTabStates[windowId] = tabState
-        windowConfigs[windowId] = storedConfig ?? WindowConfig(
+        let surface = SessionRecord.makeSurface(tabId: tabId, sessionId: sessionId, workingDirectory: dir, claudeOptions: opts)
+        let config = storedConfig ?? SessionConfig(
             workingDirectory: dir,
             claudeOptions: opts,
-            sessionName: resolvedName,
-            sidebarVisible: sidebarState.isVisible
+            sessionName: resolvedName
         )
+        return SessionRecord(
+            sessionId: sessionId,
+            tabId: tabId,
+            monitor: monitor,
+            tabState: DocumentTabState(),
+            surface: surface,
+            config: config
+        )
+    }
+
+    /// Puts a session into the dictionaries and restores its custom terminal
+    /// background. The caller adds it to the window's `WindowSessions`.
+    func registerSession(_ record: SessionRecord, in window: NSWindow) {
+        let sessionId = record.sessionId
+        sessions[sessionId] = record
+        sessionIdForTab[record.tabId] = sessionId
+        tabManagers[record.tabId] = TabManager(window: window, tabId: record.tabId)
+
         // Durable per-directory custom terminal background — survives closing
         // and reopening a session, not just Save & Quit. Prefer the per-dir
         // store; fall back to a legacy savedWindows snapshot value and migrate
         // it into the per-dir store so it persists going forward.
-        if let hex = Self.savedTerminalBackgroundHex(forDir: dir) ?? storedConfig?.customBackgroundHex,
+        let dir = record.config.workingDirectory
+        if let hex = Self.savedTerminalBackgroundHex(forDir: dir) ?? record.config.customBackgroundHex,
            let color = NSColor(hex: hex) {
-            customTerminalBackgrounds[windowId] = color
+            customTerminalBackgrounds[sessionId] = color
             if Self.savedTerminalBackgroundHex(forDir: dir) == nil {
                 Self.setSavedTerminalBackground(hex: hex, forDir: dir)
             }
-            scheduleRestoredBackgroundApply(windowId: windowId, attemptsRemaining: 40)
+            scheduleRestoredBackgroundApply(sessionId: sessionId, attemptsRemaining: 40)
         }
+    }
 
-        NotificationCenter.default.post(name: .sessionListDidChange, object: nil)
-        print("[claude-terminal] Window \(windowId) (session \(sessionId), dir \(dir), opts: \(opts ?? "none"))")
-        return (windowId, tabState)
+    /// Drops every dictionary entry for one session and stops its monitor.
+    /// Does not touch the window or `WindowSessions`; the caller does that.
+    func unregisterSession(_ sessionId: UUID) {
+        guard let record = sessions.removeValue(forKey: sessionId) else { return }
+        record.monitor.stopMonitoring()
+        sessionIdForTab.removeValue(forKey: record.tabId)
+        tabManagers.removeValue(forKey: record.tabId)
+        customTerminalBackgrounds.removeValue(forKey: sessionId)
+        terminalBackgroundObservations.removeValue(forKey: sessionId)?.invalidate()
+        terminalBackgroundApplyInProgress.remove(sessionId)
+        terminalBackgroundReapplyTimestamps.removeValue(forKey: sessionId)
+        terminalBackgroundReapplyTripped.remove(sessionId)
+        if colorPanelSessionId == sessionId {
+            colorPanelSessionId = nil
+        }
     }
 
     func openWindowDirectly(workingDirectory dir: String, claudeOptions opts: String?, sessionName: String?) {
         let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
-        installWindow(
+        openWindow(
             workingDirectory: dir,
             claudeOptions: opts,
             sessionName: sessionName,
@@ -312,12 +328,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let opts = mergeClaudeOptions(base: claudeOptions, extra: result.options)
         let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarDefaultVisible") as? Bool ?? true
-        installWindow(
+        openWindow(
             workingDirectory: result.dir,
             claudeOptions: opts,
             sessionName: result.sessionName,
             sidebarVisible: sidebarVisible
         )
+    }
+
+    /// New Tab: the picker starts at the active session's directory. When the
+    /// chosen directory is already open in a live session, `--continue` is
+    /// dropped so two tabs never resume the same conversation.
+    @objc func createNewTab() {
+        guard let (windowId, _) = resolveFrontWindow() else {
+            createNewWindow()
+            return
+        }
+        let startDir = activeSession(in: windowId)?.config.workingDirectory
+        guard let result = runWorkingDirectoryPicker(initialDir: startDir, initialName: nil) else { return }
+        var opts = result.options
+        let alreadyOpen = sessions.values.contains { $0.config.workingDirectory == result.dir }
+        if alreadyOpen, opts.contains("--continue") {
+            opts = opts.replacingOccurrences(of: "--continue", with: "")
+                .replacingOccurrences(of: "  ", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+        }
+        addSession(to: windowId, workingDirectory: result.dir, claudeOptions: opts, sessionName: result.sessionName)
     }
 
     /// Runs the directory-chooser modal with the session-name field and the
@@ -326,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// path, the resolved session name (falls back to the dir's last path
     /// component), and the assembled `--name`/`--continue`/`--dangerously…`
     /// option fragment ready to splice into the Claude argv.
-    private func runWorkingDirectoryPicker(
+    func runWorkingDirectoryPicker(
         initialDir: String?,
         initialName: String?
     ) -> (dir: String, sessionName: String, options: String)? {
@@ -415,10 +451,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController?.teardown()
         menuBarController = nil
         windows.removeAll()
-        tabManagers.removeAll()
+        windowSessions.removeAll()
         sidebarStates.removeAll()
-        sessionMonitors.removeAll()
-        windowConfigs.removeAll()
+        sessions.removeAll()
+        sessionIdForTab.removeAll()
+        tabManagers.removeAll()
     }
 }
 
