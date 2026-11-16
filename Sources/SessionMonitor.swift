@@ -289,7 +289,10 @@ final class SessionMonitor: ObservableObject {
                 }
                 self.state = decoded
                 if decoded.needsInput == true && !wasNeeding {
-                    self.sendNeedsInputNotification()
+                    self.scheduleNeedsInputNotification()
+                } else if decoded.needsInput != true {
+                    self.pendingNeedsInputWork?.cancel()
+                    self.pendingNeedsInputWork = nil
                 }
                 self.syncTranscriptTailer()
             }
@@ -390,6 +393,24 @@ final class SessionMonitor: ObservableObject {
             }
         }
         return result
+    }
+
+    /// How long `needsInput` must hold before it notifies. Auto-mode asks, quick
+    /// answers in another window and prompts that clear by themselves flip the
+    /// flag for a few seconds; those are not real waits.
+    private static let needsInputSettleSeconds: TimeInterval = 10
+    private var pendingNeedsInputWork: DispatchWorkItem?
+
+    private func scheduleNeedsInputNotification() {
+        pendingNeedsInputWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingNeedsInputWork = nil
+            guard self.state.needsInput == true else { return }
+            self.sendNeedsInputNotification()
+        }
+        pendingNeedsInputWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.needsInputSettleSeconds, execute: work)
     }
 
     private func sendNeedsInputNotification() {
